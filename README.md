@@ -24,7 +24,7 @@ This repository currently provides a clean foundation for Taurus MVP:
   - automatic startup health check
   - automatic model listing when Ollama is reachable
   - model listing
-  - chat request/response
+  - streaming chat request/response (real-time token streaming)
 - Typed command contracts between Angular and Rust
 - Basic chat workspace UI:
   - conversation sidebar placeholder
