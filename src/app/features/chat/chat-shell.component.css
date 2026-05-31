@@ -174,7 +174,7 @@ button {
 }
 
 .message header {
-  text-transform: uppercase;
+  text-transform: none;
   letter-spacing: 0.04em;
   font-size: 0.72rem;
   margin-bottom: 0.35rem;

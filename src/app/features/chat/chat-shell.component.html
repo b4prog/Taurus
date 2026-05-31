@@ -84,7 +84,7 @@
         [class.assistant]="message.role === 'assistant'"
         [class.system]="message.role === 'system'"
       >
-        <header>{{ message.role }}</header>
+        <header>{{ authorLabel(message) }}</header>
         <p>{{ message.content }}</p>
       </article>
     </section>

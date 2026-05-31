@@ -31,12 +31,7 @@ export class ChatShellComponent implements OnInit {
   protected modelsError = "";
   protected isLoadingModels = false;
 
-  protected messages: ChatMessage[] = [
-    {
-      role: "assistant",
-      content: "Welcome to Taurus. Select a model, then send a message to start chatting.",
-    },
-  ];
+  protected messages: ChatMessage[] = [];
 
   protected prompt = "";
   protected selectedModel = "";
@@ -186,6 +181,18 @@ export class ChatShellComponent implements OnInit {
 
   protected trackByMessageIndex(index: number): number {
     return index;
+  }
+
+  protected authorLabel(message: ChatMessage): string {
+    if (message.role === "assistant") {
+      return "Taurus";
+    }
+
+    if (message.role === "user") {
+      return "You";
+    }
+
+    return "System";
   }
 
   protected formatModelSize(sizeBytes: number | null): string {

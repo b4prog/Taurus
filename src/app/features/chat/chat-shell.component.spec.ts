@@ -95,11 +95,13 @@ describe("ChatShellComponent", () => {
     const vm = component as unknown as {
       selectedModel: string;
       models: Array<{ id: string }>;
+      messages: Array<{ role: string; content: string }>;
     };
     expect(providerServiceSpy.checkOllamaHealth).toHaveBeenCalledTimes(1);
     expect(providerServiceSpy.listOllamaModels).toHaveBeenCalledTimes(1);
     expect(vm.models.length).toBe(1);
     expect(vm.selectedModel).toBe("llama3:latest");
+    expect(vm.messages.length).toBe(0);
   });
 
   it("requires model selection before sending", () => {
