@@ -58,7 +58,7 @@ jobs:
 
       - name: Run tests
         run: |
-          npm run test
+          npm run test -- --browsers=ChromeHeadless
           npm run rust:test
 
       - name: Build app (no bundle)
