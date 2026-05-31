@@ -183,7 +183,7 @@ impl ChatProvider for OllamaProvider {
 		}
 
 		let mut stream = response.bytes_stream();
-		let mut buffer = String::new();
+		let mut buffer: Vec<u8> = Vec::new();
 		let mut accumulated_content = String::new();
 		let mut last_chunk: Option<OllamaChatResponse> = None;
 
@@ -194,16 +194,15 @@ impl ChatProvider for OllamaProvider {
 				))
 			})?;
 
-			let chunk_text = std::str::from_utf8(bytes.as_ref()).map_err(|error| {
-				AppError::ProviderProtocol(format!(
-					"Could not decode Ollama stream chunk as UTF-8: {error}"
-				))
-			})?;
+			buffer.extend_from_slice(bytes.as_ref());
 
-			buffer.push_str(chunk_text);
-
-			while let Some(newline_index) = buffer.find('\n') {
-				let raw_line: String = buffer.drain(..=newline_index).collect();
+			while let Some(newline_index) = buffer.iter().position(|&byte| byte == b'\n') {
+				let line_bytes: Vec<u8> = buffer.drain(..=newline_index).collect();
+				let raw_line = std::str::from_utf8(&line_bytes).map_err(|error| {
+					AppError::ProviderProtocol(format!(
+						"Could not decode Ollama stream line as UTF-8: {error}"
+					))
+				})?;
 				let trimmed_line = raw_line.trim();
 				if trimmed_line.is_empty() {
 					continue;
@@ -215,7 +214,12 @@ impl ChatProvider for OllamaProvider {
 			}
 		}
 
-		let trailing = buffer.trim();
+		let trailing = std::str::from_utf8(&buffer).map_err(|error| {
+			AppError::ProviderProtocol(format!(
+				"Could not decode trailing Ollama stream bytes as UTF-8: {error}"
+			))
+		})?;
+		let trailing = trailing.trim();
 		if !trailing.is_empty() {
 			let parsed_chunk = parse_stream_line(trailing)?;
 			emit_chunk(&parsed_chunk, &mut accumulated_content, on_chunk.as_mut())?;
