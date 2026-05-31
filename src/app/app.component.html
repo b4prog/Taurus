@@ -1,0 +1,13 @@
+<div class="app-shell">
+  <header class="top-nav">
+    <span class="title">Taurus</span>
+    <nav>
+      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }"
+        >Chat</a
+      >
+      <a routerLink="/settings" routerLinkActive="active">Settings</a>
+    </nav>
+  </header>
+
+  <router-outlet />
+</div>

@@ -1,0 +1,152 @@
+import { CommonModule } from "@angular/common";
+import { Component, inject } from "@angular/core";
+import { FormsModule } from "@angular/forms";
+import { finalize } from "rxjs";
+
+import { ChatMessage } from "../../core/chat/chat.models";
+import { ChatService } from "../../core/chat/chat.service";
+import { ModelInfo, ProviderHealth } from "../../core/providers/provider.models";
+import { ProviderService } from "../../core/providers/provider.service";
+import { extractTauriErrorMessage } from "../../core/tauri/tauri-api-error";
+
+@Component({
+  selector: "app-chat-shell",
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  templateUrl: "./chat-shell.component.html",
+  styleUrl: "./chat-shell.component.css",
+})
+export class ChatShellComponent {
+  private readonly providerService = inject(ProviderService);
+  private readonly chatService = inject(ChatService);
+
+  protected readonly providerName = "ollama";
+
+  protected health: ProviderHealth | null = null;
+  protected healthError = "";
+  protected isCheckingHealth = false;
+
+  protected models: ModelInfo[] = [];
+  protected modelsError = "";
+  protected isLoadingModels = false;
+
+  protected messages: ChatMessage[] = [
+    {
+      role: "assistant",
+      content: "Welcome to Taurus. Select a model, then send a message to start chatting.",
+    },
+  ];
+
+  protected prompt = "";
+  protected selectedModel = "";
+  protected temperature = 0.7;
+  protected isSending = false;
+  protected chatError = "";
+  protected lastDoneReason = "";
+
+  protected checkOllamaHealth(): void {
+    this.healthError = "";
+    this.isCheckingHealth = true;
+
+    this.providerService
+      .checkOllamaHealth()
+      .pipe(finalize(() => (this.isCheckingHealth = false)))
+      .subscribe({
+        next: (health) => {
+          this.health = health;
+        },
+        error: (error: unknown) => {
+          this.health = null;
+          this.healthError = extractTauriErrorMessage(error);
+        },
+      });
+  }
+
+  protected loadModels(): void {
+    this.modelsError = "";
+    this.isLoadingModels = true;
+
+    this.providerService
+      .listOllamaModels()
+      .pipe(finalize(() => (this.isLoadingModels = false)))
+      .subscribe({
+        next: (models) => {
+          this.models = models;
+
+          if (
+            this.selectedModel === "" ||
+            !models.some((model) => model.id === this.selectedModel)
+          ) {
+            this.selectedModel = models.at(0)?.id ?? "";
+          }
+        },
+        error: (error: unknown) => {
+          this.models = [];
+          this.modelsError = extractTauriErrorMessage(error);
+        },
+      });
+  }
+
+  protected sendPrompt(): void {
+    const trimmedPrompt = this.prompt.trim();
+    if (trimmedPrompt.length === 0) {
+      this.chatError = "Enter a message before sending.";
+      return;
+    }
+
+    if (this.selectedModel.length === 0) {
+      this.chatError = "Select a model before sending a message.";
+      return;
+    }
+
+    this.chatError = "";
+    this.lastDoneReason = "";
+
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: trimmedPrompt,
+    };
+
+    const nextMessages = [...this.messages, userMessage];
+    this.messages = nextMessages;
+    this.prompt = "";
+    this.isSending = true;
+
+    this.chatService
+      .sendChatMessage({
+        provider: this.providerName,
+        model: this.selectedModel,
+        messages: nextMessages,
+        temperature: this.temperature,
+        stream: false,
+      })
+      .pipe(finalize(() => (this.isSending = false)))
+      .subscribe({
+        next: (response) => {
+          this.messages = [...nextMessages, response.message];
+          this.lastDoneReason = response.doneReason ?? "completed";
+        },
+        error: (error: unknown) => {
+          this.chatError = extractTauriErrorMessage(error);
+          this.messages = nextMessages;
+        },
+      });
+  }
+
+  protected trackByModelId(_: number, model: ModelInfo): string {
+    return model.id;
+  }
+
+  protected trackByMessageIndex(index: number): number {
+    return index;
+  }
+
+  protected formatModelSize(sizeBytes: number | null): string {
+    if (sizeBytes === null) {
+      return "size unavailable";
+    }
+
+    const sizeInGiB = sizeBytes / 1024 ** 3;
+    return `${sizeInGiB.toFixed(2)} GiB`;
+  }
+}

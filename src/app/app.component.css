@@ -1,0 +1,39 @@
+:host {
+  display: block;
+}
+
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.65rem 1rem;
+  background: rgba(247, 243, 235, 0.94);
+  border-bottom: 1px solid #d9d2c5;
+  backdrop-filter: blur(8px);
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+.title {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+nav {
+  display: flex;
+  gap: 0.65rem;
+}
+
+a {
+  text-decoration: none;
+  color: #234249;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+}
+
+a.active {
+  background: #dbecef;
+}
