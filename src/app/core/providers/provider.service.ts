@@ -1,6 +1,6 @@
 import { Injectable } from "@angular/core";
 import { invoke } from "@tauri-apps/api/core";
-import { from, map, Observable } from "rxjs";
+import { defer, from, map, Observable } from "rxjs";
 
 import { ModelInfo, ModelInfoDto, ProviderHealth, ProviderHealthDto } from "./provider.models";
 
@@ -21,8 +21,10 @@ const PROVIDER_COMMANDS: Readonly<Record<string, ProviderCommands>> = {
 })
 export class ProviderService {
   checkProviderHealth(providerId: string): Observable<ProviderHealth> {
-    const commands = this.resolveProviderCommands(providerId);
-    return from(invoke<ProviderHealthDto>(commands.healthCommand)).pipe(
+    return defer(() => {
+      const commands = this.resolveProviderCommands(providerId);
+      return from(invoke<ProviderHealthDto>(commands.healthCommand));
+    }).pipe(
       map((response) => ({
         provider: response.provider,
         healthy: response.healthy,
@@ -33,8 +35,10 @@ export class ProviderService {
   }
 
   listProviderModels(providerId: string): Observable<ModelInfo[]> {
-    const commands = this.resolveProviderCommands(providerId);
-    return from(invoke<ModelInfoDto[]>(commands.listModelsCommand)).pipe(
+    return defer(() => {
+      const commands = this.resolveProviderCommands(providerId);
+      return from(invoke<ModelInfoDto[]>(commands.listModelsCommand));
+    }).pipe(
       map((models) =>
         models.map((model) => ({
           provider: model.provider,
