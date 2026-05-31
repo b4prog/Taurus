@@ -71,11 +71,11 @@ impl ChatProvider for OllamaProvider {
 			.send()
 			.await
 			.map_err(|error| {
-			AppError::ProviderUnavailable(format!(
-				"Could not reach Ollama at '{}': {error}",
-				self.base_url
-			))
-		})?;
+				AppError::ProviderUnavailable(format!(
+					"Could not reach Ollama at '{}': {error}",
+					self.base_url
+				))
+			})?;
 
 		if !response.status().is_success() {
 			return Err(AppError::ProviderUnavailable(format!(
@@ -102,11 +102,11 @@ impl ChatProvider for OllamaProvider {
 			.send()
 			.await
 			.map_err(|error| {
-			AppError::ProviderUnavailable(format!(
-				"Could not reach Ollama at '{}': {error}",
-				self.base_url
-			))
-		})?;
+				AppError::ProviderUnavailable(format!(
+					"Could not reach Ollama at '{}': {error}",
+					self.base_url
+				))
+			})?;
 
 		if !response.status().is_success() {
 			return Err(AppError::ProviderUnavailable(format!(
@@ -499,7 +499,8 @@ mod tests {
 					continue;
 				}
 
-				let parsed_chunk = parse_stream_line(trimmed_line).expect("stream line should parse");
+				let parsed_chunk =
+					parse_stream_line(trimmed_line).expect("stream line should parse");
 				emit_chunk(&parsed_chunk, &mut accumulated_content, &mut on_chunk)
 					.expect("stream chunk should emit");
 				last_chunk = Some(parsed_chunk);

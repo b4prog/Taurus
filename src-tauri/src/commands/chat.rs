@@ -149,9 +149,11 @@ mod tests {
 			content: "   ".to_string(),
 		}];
 
-		let error =
-			validate_chat_request(request).expect_err("whitespace-only message content should fail");
-		assert!(error.to_string().contains("Message content cannot be empty"));
+		let error = validate_chat_request(request)
+			.expect_err("whitespace-only message content should fail");
+		assert!(error
+			.to_string()
+			.contains("Message content cannot be empty"));
 	}
 
 	#[test]
