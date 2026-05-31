@@ -365,7 +365,6 @@ npx -y node@20 ./node_modules/@angular/cli/bin/ng build
 
 Planned next steps include:
 
-- Streaming response tokens in the chat UI
 - Conversation persistence
 - Provider selection in UI
 - Additional provider modules (OpenAI-compatible/local backends)
