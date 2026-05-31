@@ -406,7 +406,11 @@ struct OllamaChatMessageResponse {
 
 #[cfg(test)]
 mod tests {
-	use super::{map_models, resolve_base_url, OllamaTagsResponse};
+	use super::{
+		emit_chunk, map_models, map_ollama_response, parse_stream_line, resolve_base_url,
+		OllamaProvider, OllamaTagsResponse,
+	};
+	use crate::providers::{ChatProvider, ChatStreamChunk};
 
 	#[test]
 	fn resolve_base_url_accepts_http_without_trailing_slash() {
@@ -447,5 +451,71 @@ mod tests {
 		assert_eq!(models[0].display_name, "llama3.1:8b");
 		assert_eq!(models[0].id, "llama3.1:8b-q4");
 		assert_eq!(models[0].size_bytes, Some(123));
+	}
+
+	#[test]
+	fn stream_parsing_handles_fragmented_utf8_and_multiple_lines() {
+		let _chat_stream_ref = <OllamaProvider as ChatProvider>::chat_stream;
+
+		let first_line = r#"{"model":"llama3.1:8b","created_at":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":"Olá "},"done":false,"done_reason":null}"#;
+		let second_line = r#"{"model":"llama3.1:8b","created_at":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":"世界"},"done":true,"done_reason":"stop"}"#;
+		let payload = format!("{first_line}\n{second_line}\n");
+		let bytes = payload.as_bytes();
+
+		let split_index = bytes
+			.iter()
+			.position(|byte| *byte == 0xC3)
+			.expect("payload should contain a multi-byte UTF-8 lead byte");
+		let first_newline_index = bytes
+			.iter()
+			.position(|byte| *byte == b'\n')
+			.expect("payload should contain a newline");
+
+		let chunks: Vec<&[u8]> = vec![
+			&bytes[..split_index + 1],
+			&bytes[split_index + 1..first_newline_index - 2],
+			&bytes[first_newline_index - 2..first_newline_index + 1],
+			&bytes[first_newline_index + 1..],
+		];
+
+		let mut buffer: Vec<u8> = Vec::new();
+		let mut accumulated_content = String::new();
+		let mut last_chunk = None;
+		let mut emitted_chunks: Vec<ChatStreamChunk> = Vec::new();
+		let mut on_chunk = |chunk: ChatStreamChunk| -> Result<(), crate::error::AppError> {
+			emitted_chunks.push(chunk);
+			Ok(())
+		};
+
+		for chunk in chunks {
+			buffer.extend_from_slice(chunk);
+
+			while let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
+				let line_bytes: Vec<u8> = buffer.drain(..=newline_index).collect();
+				let raw_line = std::str::from_utf8(&line_bytes)
+					.expect("line bytes should decode as complete UTF-8");
+				let trimmed_line = raw_line.trim();
+				if trimmed_line.is_empty() {
+					continue;
+				}
+
+				let parsed_chunk = parse_stream_line(trimmed_line).expect("stream line should parse");
+				emit_chunk(&parsed_chunk, &mut accumulated_content, &mut on_chunk)
+					.expect("stream chunk should emit");
+				last_chunk = Some(parsed_chunk);
+			}
+		}
+
+		let trailing = std::str::from_utf8(&buffer).expect("trailing bytes should be valid UTF-8");
+		assert!(trailing.trim().is_empty());
+
+		let final_chunk = last_chunk.expect("final chunk should exist");
+		let final_response = map_ollama_response(final_chunk).expect("final chunk should map");
+
+		assert_eq!(accumulated_content, "Olá 世界");
+		assert_eq!(emitted_chunks.len(), 2);
+		assert_eq!(emitted_chunks[0].delta, "Olá ");
+		assert_eq!(emitted_chunks[1].delta, "世界");
+		assert_eq!(final_response.message.content, "世界");
 	}
 }
