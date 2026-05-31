@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::error::AppError;
 
@@ -11,6 +12,8 @@ use super::{
 };
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
+const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct OllamaProvider {
@@ -26,7 +29,9 @@ impl OllamaProvider {
 
 	pub fn new(base_url: Option<&str>) -> Result<Self, AppError> {
 		let resolved_url = resolve_base_url(base_url.unwrap_or(DEFAULT_OLLAMA_BASE_URL))?;
-		let client = Client::builder().build()?;
+		let client = Client::builder()
+			.connect_timeout(OLLAMA_CONNECT_TIMEOUT)
+			.build()?;
 
 		Ok(Self {
 			client,
@@ -59,7 +64,13 @@ impl ChatProvider for OllamaProvider {
 	async fn health_check(&self) -> Result<ProviderHealth, AppError> {
 		let endpoint = self.endpoint("api/tags")?;
 
-		let response = self.client.get(endpoint).send().await.map_err(|error| {
+		let response = self
+			.client
+			.get(endpoint)
+			.timeout(OLLAMA_REQUEST_TIMEOUT)
+			.send()
+			.await
+			.map_err(|error| {
 			AppError::ProviderUnavailable(format!(
 				"Could not reach Ollama at '{}': {error}",
 				self.base_url
@@ -84,7 +95,13 @@ impl ChatProvider for OllamaProvider {
 	async fn list_models(&self) -> Result<Vec<ModelInfo>, AppError> {
 		let endpoint = self.endpoint("api/tags")?;
 
-		let response = self.client.get(endpoint).send().await.map_err(|error| {
+		let response = self
+			.client
+			.get(endpoint)
+			.timeout(OLLAMA_REQUEST_TIMEOUT)
+			.send()
+			.await
+			.map_err(|error| {
 			AppError::ProviderUnavailable(format!(
 				"Could not reach Ollama at '{}': {error}",
 				self.base_url
@@ -113,6 +130,7 @@ impl ChatProvider for OllamaProvider {
 			.client
 			.post(endpoint)
 			.json(&body)
+			.timeout(OLLAMA_REQUEST_TIMEOUT)
 			.send()
 			.await
 			.map_err(|error| {
