@@ -10,6 +10,9 @@ import { ProviderService } from "../../core/providers/provider.service";
 import { extractTauriErrorMessage } from "../../core/tauri/tauri-api-error";
 
 const DEFAULT_PROVIDER_KEY = "ollama";
+const DEFAULT_TEMPERATURE = 0.7;
+const MIN_TEMPERATURE = 0.0;
+const MAX_TEMPERATURE = 2.0;
 
 @Component({
   selector: "app-chat-shell",
@@ -37,7 +40,7 @@ export class ChatShellComponent implements OnInit {
 
   protected prompt = "";
   protected selectedModel = "";
-  protected temperature = 0.7;
+  protected temperature: number | null = DEFAULT_TEMPERATURE;
   protected isSending = false;
   protected chatError = "";
   protected lastDoneReason = "";
@@ -119,6 +122,13 @@ export class ChatShellComponent implements OnInit {
     };
     const streamMessages = [...nextMessages, streamingAssistantMessage];
     const assistantIndex = streamMessages.length - 1;
+    const rawTemperature =
+      this.temperature === null || this.temperature === undefined
+        ? DEFAULT_TEMPERATURE
+        : Number(this.temperature);
+    const safeTemperature = Number.isFinite(rawTemperature)
+      ? Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, rawTemperature))
+      : DEFAULT_TEMPERATURE;
 
     this.messages = streamMessages;
     this.prompt = "";
@@ -129,7 +139,7 @@ export class ChatShellComponent implements OnInit {
         provider: this.providerKey,
         model: this.selectedModel,
         messages: nextMessages,
-        temperature: this.temperature,
+        temperature: safeTemperature,
         stream: true,
       })
       .pipe(finalize(() => (this.isSending = false)))

@@ -120,6 +120,39 @@ describe("ChatShellComponent", () => {
     expect(chatServiceSpy.sendChatMessageStream).not.toHaveBeenCalled();
   });
 
+  it("sanitizes temperature before sending", () => {
+    const vm = component as unknown as {
+      prompt: string;
+      selectedModel: string;
+      temperature: number | null;
+      sendPrompt: () => void;
+    };
+
+    vm.selectedModel = "llama3:latest";
+
+    vm.prompt = "Hello";
+    vm.temperature = null;
+    vm.sendPrompt();
+
+    expect(chatServiceSpy.sendChatMessageStream).toHaveBeenCalled();
+    const firstRequest = chatServiceSpy.sendChatMessageStream.calls.mostRecent().args[0] as {
+      temperature: number;
+    };
+    expect(firstRequest.temperature).toBe(0.7);
+
+    chatServiceSpy.sendChatMessageStream.calls.reset();
+
+    vm.prompt = "Hello again";
+    vm.temperature = 99;
+    vm.sendPrompt();
+
+    expect(chatServiceSpy.sendChatMessageStream).toHaveBeenCalled();
+    const secondRequest = chatServiceSpy.sendChatMessageStream.calls.mostRecent().args[0] as {
+      temperature: number;
+    };
+    expect(secondRequest.temperature).toBe(2);
+  });
+
   it("streams assistant response while sending", () => {
     const vm = component as unknown as {
       prompt: string;
