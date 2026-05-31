@@ -100,6 +100,18 @@ describe("ChatShellComponent", () => {
     expect(component).toBeTruthy();
   });
 
+  it("checks Ollama and loads models on startup", () => {
+    const vm = component as unknown as {
+      selectedModel: string;
+      models: Array<{ id: string }>;
+    };
+
+    expect(providerServiceSpy.checkOllamaHealth).toHaveBeenCalledTimes(1);
+    expect(providerServiceSpy.listOllamaModels).toHaveBeenCalledTimes(1);
+    expect(vm.models.length).toBe(1);
+    expect(vm.selectedModel).toBe("llama3:latest");
+  });
+
   it("requires model selection before sending", () => {
     const vm = component as unknown as {
       prompt: string;

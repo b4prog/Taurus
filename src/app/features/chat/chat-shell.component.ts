@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, inject, NgZone } from "@angular/core";
+import { Component, inject, NgZone, OnInit } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { finalize } from "rxjs";
 
@@ -16,7 +16,7 @@ import { extractTauriErrorMessage } from "../../core/tauri/tauri-api-error";
   templateUrl: "./chat-shell.component.html",
   styleUrl: "./chat-shell.component.css",
 })
-export class ChatShellComponent {
+export class ChatShellComponent implements OnInit {
   private readonly providerService = inject(ProviderService);
   private readonly chatService = inject(ChatService);
   private readonly ngZone = inject(NgZone);
@@ -45,7 +45,11 @@ export class ChatShellComponent {
   protected chatError = "";
   protected lastDoneReason = "";
 
-  protected checkOllamaHealth(): void {
+  ngOnInit(): void {
+    this.checkOllamaHealth(true);
+  }
+
+  protected checkOllamaHealth(loadModelsOnSuccess = false): void {
     this.healthError = "";
     this.isCheckingHealth = true;
 
@@ -55,6 +59,9 @@ export class ChatShellComponent {
       .subscribe({
         next: (health) => {
           this.health = health;
+          if (loadModelsOnSuccess && health.healthy) {
+            this.loadModels();
+          }
         },
         error: (error: unknown) => {
           this.health = null;
