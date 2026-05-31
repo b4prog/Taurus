@@ -4,12 +4,25 @@ import { from, map, Observable } from "rxjs";
 
 import { ModelInfo, ModelInfoDto, ProviderHealth, ProviderHealthDto } from "./provider.models";
 
+interface ProviderCommands {
+  readonly healthCommand: string;
+  readonly listModelsCommand: string;
+}
+
+const PROVIDER_COMMANDS: Readonly<Record<string, ProviderCommands>> = {
+  ollama: {
+    healthCommand: "check_ollama_health",
+    listModelsCommand: "list_ollama_models",
+  },
+};
+
 @Injectable({
   providedIn: "root",
 })
 export class ProviderService {
-  checkOllamaHealth(): Observable<ProviderHealth> {
-    return from(invoke<ProviderHealthDto>("check_ollama_health")).pipe(
+  checkProviderHealth(providerId: string): Observable<ProviderHealth> {
+    const commands = this.resolveProviderCommands(providerId);
+    return from(invoke<ProviderHealthDto>(commands.healthCommand)).pipe(
       map((response) => ({
         provider: response.provider,
         healthy: response.healthy,
@@ -19,8 +32,9 @@ export class ProviderService {
     );
   }
 
-  listOllamaModels(): Observable<ModelInfo[]> {
-    return from(invoke<ModelInfoDto[]>("list_ollama_models")).pipe(
+  listProviderModels(providerId: string): Observable<ModelInfo[]> {
+    const commands = this.resolveProviderCommands(providerId);
+    return from(invoke<ModelInfoDto[]>(commands.listModelsCommand)).pipe(
       map((models) =>
         models.map((model) => ({
           provider: model.provider,
@@ -31,5 +45,15 @@ export class ProviderService {
         })),
       ),
     );
+  }
+
+  private resolveProviderCommands(providerId: string): ProviderCommands {
+    const normalizedProviderId = providerId.trim().toLowerCase();
+    const commands = PROVIDER_COMMANDS[normalizedProviderId];
+    if (commands === undefined) {
+      throw new Error(`Unsupported provider '${providerId}'.`);
+    }
+
+    return commands;
   }
 }

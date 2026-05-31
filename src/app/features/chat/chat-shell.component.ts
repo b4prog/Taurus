@@ -49,7 +49,7 @@ export class ChatShellComponent implements OnInit {
     this.isCheckingHealth = true;
 
     this.providerService
-      .checkOllamaHealth()
+      .checkProviderHealth(this.providerName)
       .pipe(finalize(() => (this.isCheckingHealth = false)))
       .subscribe({
         next: (health) => {
@@ -70,7 +70,7 @@ export class ChatShellComponent implements OnInit {
     this.isLoadingModels = true;
 
     this.providerService
-      .listOllamaModels()
+      .listProviderModels(this.providerName)
       .pipe(finalize(() => (this.isLoadingModels = false)))
       .subscribe({
         next: (models) => {

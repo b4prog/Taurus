@@ -9,18 +9,18 @@ describe("ChatShellComponent", () => {
   let fixture: ComponentFixture<ChatShellComponent>;
   let component: ChatShellComponent;
   const providerServiceSpy = jasmine.createSpyObj<ProviderService>("ProviderService", [
-    "checkOllamaHealth",
-    "listOllamaModels",
+    "checkProviderHealth",
+    "listProviderModels",
   ]);
   const chatServiceSpy = jasmine.createSpyObj<ChatService>("ChatService", [
     "sendChatMessageStream",
   ]);
 
   beforeEach(async () => {
-    providerServiceSpy.checkOllamaHealth.calls.reset();
-    providerServiceSpy.listOllamaModels.calls.reset();
+    providerServiceSpy.checkProviderHealth.calls.reset();
+    providerServiceSpy.listProviderModels.calls.reset();
     chatServiceSpy.sendChatMessageStream.calls.reset();
-    providerServiceSpy.checkOllamaHealth.and.returnValue(
+    providerServiceSpy.checkProviderHealth.and.returnValue(
       of({
         provider: "ollama",
         healthy: true,
@@ -28,7 +28,7 @@ describe("ChatShellComponent", () => {
         message: "ok",
       }),
     );
-    providerServiceSpy.listOllamaModels.and.returnValue(
+    providerServiceSpy.listProviderModels.and.returnValue(
       of([
         {
           provider: "ollama",
@@ -97,8 +97,10 @@ describe("ChatShellComponent", () => {
       models: Array<{ id: string }>;
       messages: Array<{ role: string; content: string }>;
     };
-    expect(providerServiceSpy.checkOllamaHealth).toHaveBeenCalledTimes(1);
-    expect(providerServiceSpy.listOllamaModels).toHaveBeenCalledTimes(1);
+    expect(providerServiceSpy.checkProviderHealth).toHaveBeenCalledWith("ollama");
+    expect(providerServiceSpy.listProviderModels).toHaveBeenCalledWith("ollama");
+    expect(providerServiceSpy.checkProviderHealth).toHaveBeenCalledTimes(1);
+    expect(providerServiceSpy.listProviderModels).toHaveBeenCalledTimes(1);
     expect(vm.models.length).toBe(1);
     expect(vm.selectedModel).toBe("llama3:latest");
     expect(vm.messages.length).toBe(0);
