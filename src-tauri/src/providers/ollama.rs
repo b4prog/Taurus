@@ -1,12 +1,13 @@
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
 use super::{
-	ChatMessage, ChatProvider, ChatRequest, ChatResponse, ChatRole, ModelInfo, ProviderHealth,
-	OLLAMA_PROVIDER_ID,
+	ChatMessage, ChatProvider, ChatRequest, ChatResponse, ChatRole, ChatStreamChunk, ModelInfo,
+	ProviderHealth, OLLAMA_PROVIDER_ID,
 };
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
@@ -39,6 +40,17 @@ impl OllamaProvider {
 				"Could not construct provider endpoint URL: {error}"
 			))
 		})
+	}
+
+	fn build_chat_request_body(request: ChatRequest, stream: bool) -> OllamaChatRequest {
+		OllamaChatRequest {
+			model: request.model,
+			messages: request.messages.into_iter().map(From::from).collect(),
+			stream,
+			options: request
+				.temperature
+				.map(|temperature| OllamaChatOptions { temperature }),
+		}
 	}
 }
 
@@ -95,15 +107,7 @@ impl ChatProvider for OllamaProvider {
 
 	async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, AppError> {
 		let endpoint = self.endpoint("api/chat")?;
-
-		let body = OllamaChatRequest {
-			model: request.model,
-			messages: request.messages.into_iter().map(From::from).collect(),
-			stream: request.stream.unwrap_or(false),
-			options: request
-				.temperature
-				.map(|temperature| OllamaChatOptions { temperature }),
-		};
+		let body = Self::build_chat_request_body(request, false);
 
 		let response = self
 			.client
@@ -129,18 +133,95 @@ impl ChatProvider for OllamaProvider {
 			AppError::ProviderProtocol(format!("Could not parse Ollama chat response: {error}"))
 		})?;
 
-		let role = parse_chat_role(&payload.message.role)?;
+		map_ollama_response(payload)
+	}
+
+	async fn chat_stream(
+		&self,
+		request: ChatRequest,
+		mut on_chunk: Box<dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send>,
+	) -> Result<ChatResponse, AppError> {
+		let endpoint = self.endpoint("api/chat")?;
+		let body = Self::build_chat_request_body(request, true);
+
+		let response = self
+			.client
+			.post(endpoint)
+			.json(&body)
+			.send()
+			.await
+			.map_err(|error| {
+				AppError::ProviderUnavailable(format!(
+					"Could not reach Ollama at '{}': {error}",
+					self.base_url
+				))
+			})?;
+
+		if !response.status().is_success() {
+			return Err(AppError::ProviderUnavailable(format!(
+				"Ollama streaming chat request failed with HTTP status {}.",
+				response.status()
+			)));
+		}
+
+		let mut stream = response.bytes_stream();
+		let mut buffer = String::new();
+		let mut accumulated_content = String::new();
+		let mut last_chunk: Option<OllamaChatResponse> = None;
+
+		while let Some(next_chunk) = stream.next().await {
+			let bytes = next_chunk.map_err(|error| {
+				AppError::ProviderUnavailable(format!(
+					"Streaming response from Ollama failed: {error}"
+				))
+			})?;
+
+			let chunk_text = std::str::from_utf8(bytes.as_ref()).map_err(|error| {
+				AppError::ProviderProtocol(format!(
+					"Could not decode Ollama stream chunk as UTF-8: {error}"
+				))
+			})?;
+
+			buffer.push_str(chunk_text);
+
+			while let Some(newline_index) = buffer.find('\n') {
+				let raw_line: String = buffer.drain(..=newline_index).collect();
+				let trimmed_line = raw_line.trim();
+				if trimmed_line.is_empty() {
+					continue;
+				}
+
+				let parsed_chunk = parse_stream_line(trimmed_line)?;
+				emit_chunk(&parsed_chunk, &mut accumulated_content, on_chunk.as_mut())?;
+				last_chunk = Some(parsed_chunk);
+			}
+		}
+
+		let trailing = buffer.trim();
+		if !trailing.is_empty() {
+			let parsed_chunk = parse_stream_line(trailing)?;
+			emit_chunk(&parsed_chunk, &mut accumulated_content, on_chunk.as_mut())?;
+			last_chunk = Some(parsed_chunk);
+		}
+
+		let Some(final_chunk) = last_chunk else {
+			return Err(AppError::ProviderProtocol(
+				"Ollama returned an empty stream response.".to_string(),
+			));
+		};
+
+		let role = parse_chat_role(&final_chunk.message.role)?;
 
 		Ok(ChatResponse {
 			provider: OLLAMA_PROVIDER_ID.to_string(),
-			model: payload.model,
+			model: final_chunk.model,
 			message: ChatMessage {
 				role,
-				content: payload.message.content,
+				content: accumulated_content,
 			},
-			done: payload.done,
-			done_reason: payload.done_reason,
-			created_at: payload.created_at,
+			done: final_chunk.done,
+			done_reason: final_chunk.done_reason,
+			created_at: final_chunk.created_at,
 		})
 	}
 }
@@ -196,6 +277,46 @@ fn map_models(payload: OllamaTagsResponse) -> Vec<ModelInfo> {
 			modified_at: model.modified_at,
 		})
 		.collect()
+}
+
+fn map_ollama_response(payload: OllamaChatResponse) -> Result<ChatResponse, AppError> {
+	let role = parse_chat_role(&payload.message.role)?;
+
+	Ok(ChatResponse {
+		provider: OLLAMA_PROVIDER_ID.to_string(),
+		model: payload.model,
+		message: ChatMessage {
+			role,
+			content: payload.message.content,
+		},
+		done: payload.done,
+		done_reason: payload.done_reason,
+		created_at: payload.created_at,
+	})
+}
+
+fn parse_stream_line(line: &str) -> Result<OllamaChatResponse, AppError> {
+	serde_json::from_str(line).map_err(|error| {
+		AppError::ProviderProtocol(format!("Could not parse stream chunk: {error}"))
+	})
+}
+
+fn emit_chunk(
+	chunk: &OllamaChatResponse,
+	accumulated_content: &mut String,
+	on_chunk: &mut (dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send),
+) -> Result<(), AppError> {
+	let delta = chunk.message.content.clone();
+	accumulated_content.push_str(&delta);
+
+	on_chunk(ChatStreamChunk {
+		provider: OLLAMA_PROVIDER_ID.to_string(),
+		model: chunk.model.clone(),
+		delta,
+		done: chunk.done,
+		done_reason: chunk.done_reason.clone(),
+		created_at: chunk.created_at.clone(),
+	})
 }
 
 #[derive(Debug, Deserialize)]

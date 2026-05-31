@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, inject } from "@angular/core";
+import { Component, inject, NgZone } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { finalize } from "rxjs";
 
@@ -19,6 +19,7 @@ import { extractTauriErrorMessage } from "../../core/tauri/tauri-api-error";
 export class ChatShellComponent {
   private readonly providerService = inject(ProviderService);
   private readonly chatService = inject(ChatService);
+  private readonly ngZone = inject(NgZone);
 
   protected readonly providerName = "ollama";
 
@@ -108,27 +109,66 @@ export class ChatShellComponent {
     };
 
     const nextMessages = [...this.messages, userMessage];
-    this.messages = nextMessages;
+    const streamingAssistantMessage: ChatMessage = {
+      role: "assistant",
+      content: "",
+    };
+    const streamMessages = [...nextMessages, streamingAssistantMessage];
+    const assistantIndex = streamMessages.length - 1;
+
+    this.messages = streamMessages;
     this.prompt = "";
     this.isSending = true;
 
     this.chatService
-      .sendChatMessage({
+      .sendChatMessageStream({
         provider: this.providerName,
         model: this.selectedModel,
         messages: nextMessages,
         temperature: this.temperature,
-        stream: false,
+        stream: true,
       })
       .pipe(finalize(() => (this.isSending = false)))
       .subscribe({
-        next: (response) => {
-          this.messages = [...nextMessages, response.message];
-          this.lastDoneReason = response.doneReason ?? "completed";
+        next: (update) => {
+          this.ngZone.run(() => {
+            if (update.kind === "chunk") {
+              const currentAssistant = this.messages.at(assistantIndex);
+              if (currentAssistant === undefined) {
+                return;
+              }
+
+              if (update.chunk.delta.length > 0) {
+                currentAssistant.content = `${currentAssistant.content}${update.chunk.delta}`;
+                this.messages = [...this.messages];
+              }
+
+              if (update.chunk.done) {
+                this.lastDoneReason = update.chunk.doneReason ?? "completed";
+              }
+              return;
+            }
+
+            const currentAssistant = this.messages.at(assistantIndex);
+            const fallbackContent = currentAssistant?.content ?? "";
+            const finalContent =
+              update.response.message.content.length > 0
+                ? update.response.message.content
+                : fallbackContent;
+
+            this.messages[assistantIndex] = {
+              ...update.response.message,
+              content: finalContent,
+            };
+            this.messages = [...this.messages];
+            this.lastDoneReason = update.response.doneReason ?? "completed";
+          });
         },
         error: (error: unknown) => {
-          this.chatError = extractTauriErrorMessage(error);
-          this.messages = nextMessages;
+          this.ngZone.run(() => {
+            this.chatError = extractTauriErrorMessage(error);
+            this.messages = nextMessages;
+          });
         },
       });
   }

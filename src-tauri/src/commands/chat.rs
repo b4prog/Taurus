@@ -1,23 +1,52 @@
-use tauri::State;
+use tauri::{ipc::Channel, State};
 
 use crate::{
 	app_state::AppState,
 	error::{ApiError, AppError},
-	providers::ChatRequest,
+	providers::{ChatRequest, ChatResponse, ChatStreamChunk},
 };
 
 #[tauri::command]
 pub async fn send_chat_message(
 	state: State<'_, AppState>,
 	request: ChatRequest,
-) -> Result<crate::providers::ChatResponse, ApiError> {
-	let request = validate_chat_request(request).map_err(ApiError::from)?;
+) -> Result<ChatResponse, ApiError> {
+	let mut request = validate_chat_request(request).map_err(ApiError::from)?;
+	request.stream = Some(false);
 
 	let provider = state
 		.provider(request.provider.as_deref())
 		.map_err(ApiError::from)?;
 
 	provider.chat(request).await.map_err(ApiError::from)
+}
+
+#[tauri::command]
+pub async fn send_chat_message_stream(
+	state: State<'_, AppState>,
+	request: ChatRequest,
+	on_chunk: Channel<ChatStreamChunk>,
+) -> Result<ChatResponse, ApiError> {
+	let mut request = validate_chat_request(request).map_err(ApiError::from)?;
+	request.stream = Some(true);
+
+	let provider = state
+		.provider(request.provider.as_deref())
+		.map_err(ApiError::from)?;
+
+	provider
+		.chat_stream(
+			request,
+			Box::new(move |chunk| {
+				on_chunk.send(chunk).map_err(|error| {
+					AppError::EventEmit(format!(
+						"Failed to send stream chunk over IPC channel: {error}"
+					))
+				})
+			}),
+		)
+		.await
+		.map_err(ApiError::from)
 }
 
 fn validate_chat_request(mut request: ChatRequest) -> Result<ChatRequest, AppError> {
@@ -48,13 +77,6 @@ fn validate_chat_request(mut request: ChatRequest) -> Result<ChatRequest, AppErr
 		if provider.is_empty() {
 			request.provider = None;
 		}
-	}
-
-	if request.stream.unwrap_or(false) {
-		return Err(AppError::Validation(
-			"Streaming is planned but not implemented yet. Set 'stream' to false for now."
-				.to_string(),
-		));
 	}
 
 	if let Some(temperature) = request.temperature {
@@ -96,11 +118,11 @@ mod tests {
 	}
 
 	#[test]
-	fn validate_rejects_streaming_for_now() {
+	fn validate_accepts_stream_flag() {
 		let mut request = valid_request();
 		request.stream = Some(true);
 
-		let error = validate_chat_request(request).expect_err("stream should fail");
-		assert!(error.to_string().contains("not implemented"));
+		let result = validate_chat_request(request);
+		assert!(result.is_ok());
 	}
 }

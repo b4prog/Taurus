@@ -21,7 +21,8 @@ pub fn run() {
 			.invoke_handler(tauri::generate_handler![
 				commands::health::check_ollama_health,
 				commands::models::list_ollama_models,
-				commands::chat::send_chat_message
+				commands::chat::send_chat_message,
+				commands::chat::send_chat_message_stream
 			]);
 
 	if let Err(error) = builder.run(tauri::generate_context!()) {

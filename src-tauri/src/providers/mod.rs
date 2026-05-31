@@ -41,6 +41,16 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatStreamChunk {
+	pub provider: String,
+	pub model: String,
+	pub delta: String,
+	pub done: bool,
+	pub done_reason: Option<String>,
+	pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderHealth {
 	pub provider: String,
 	pub healthy: bool,
@@ -62,4 +72,9 @@ pub trait ChatProvider: Send + Sync {
 	async fn health_check(&self) -> Result<ProviderHealth, AppError>;
 	async fn list_models(&self) -> Result<Vec<ModelInfo>, AppError>;
 	async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, AppError>;
+	async fn chat_stream(
+		&self,
+		request: ChatRequest,
+		on_chunk: Box<dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send>,
+	) -> Result<ChatResponse, AppError>;
 }

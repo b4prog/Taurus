@@ -30,3 +30,25 @@ export interface ChatResponse {
   doneReason: string | null;
   createdAt: string | null;
 }
+
+export interface ChatStreamChunkDto {
+  provider: string;
+  model: string;
+  delta: string;
+  done: boolean;
+  done_reason: string | null;
+  created_at: string | null;
+}
+
+export interface ChatStreamChunk {
+  provider: string;
+  model: string;
+  delta: string;
+  done: boolean;
+  doneReason: string | null;
+  createdAt: string | null;
+}
+
+export type ChatStreamUpdate =
+  | { kind: "chunk"; chunk: ChatStreamChunk }
+  | { kind: "complete"; response: ChatResponse };

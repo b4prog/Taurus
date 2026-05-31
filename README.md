@@ -13,7 +13,7 @@ This repository currently provides a clean foundation for Taurus MVP:
 - Tauri v2 desktop shell
 - Rust backend with typed provider abstraction
 - Angular frontend with a chat-oriented UI shell
-- Ollama health check, model listing, and non-streaming chat command flow
+- Ollama health check, model listing, and streaming chat command flow
 
 ## 3. Features
 

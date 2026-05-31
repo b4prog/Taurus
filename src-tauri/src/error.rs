@@ -15,6 +15,8 @@ pub enum AppError {
 	ProviderProtocol(String),
 	#[error("Invalid configuration: {0}")]
 	Config(String),
+	#[error("Internal stream delivery error: {0}")]
+	EventEmit(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +61,10 @@ impl From<AppError> for ApiError {
 			},
 			AppError::Config(message) => Self {
 				code: "config_error".to_string(),
+				message,
+			},
+			AppError::EventEmit(message) => Self {
+				code: "stream_event_error".to_string(),
 				message,
 			},
 		}
