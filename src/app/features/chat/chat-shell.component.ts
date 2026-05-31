@@ -9,6 +9,8 @@ import { ModelInfo, ProviderHealth } from "../../core/providers/provider.models"
 import { ProviderService } from "../../core/providers/provider.service";
 import { extractTauriErrorMessage } from "../../core/tauri/tauri-api-error";
 
+const DEFAULT_PROVIDER_KEY = "ollama";
+
 @Component({
   selector: "app-chat-shell",
   standalone: true,
@@ -21,7 +23,7 @@ export class ChatShellComponent implements OnInit {
   private readonly chatService = inject(ChatService);
   private readonly ngZone = inject(NgZone);
 
-  protected readonly providerName = "ollama";
+  protected providerKey = DEFAULT_PROVIDER_KEY;
 
   protected health: ProviderHealth | null = null;
   protected healthError = "";
@@ -41,15 +43,15 @@ export class ChatShellComponent implements OnInit {
   protected lastDoneReason = "";
 
   ngOnInit(): void {
-    this.checkOllamaHealth(true);
+    this.checkProviderHealth(true);
   }
 
-  protected checkOllamaHealth(loadModelsOnSuccess = false): void {
+  protected checkProviderHealth(loadModelsOnSuccess = false): void {
     this.healthError = "";
     this.isCheckingHealth = true;
 
     this.providerService
-      .checkProviderHealth(this.providerName)
+      .checkProviderHealth(this.providerKey)
       .pipe(finalize(() => (this.isCheckingHealth = false)))
       .subscribe({
         next: (health) => {
@@ -70,7 +72,7 @@ export class ChatShellComponent implements OnInit {
     this.isLoadingModels = true;
 
     this.providerService
-      .listProviderModels(this.providerName)
+      .listProviderModels(this.providerKey)
       .pipe(finalize(() => (this.isLoadingModels = false)))
       .subscribe({
         next: (models) => {
@@ -124,7 +126,7 @@ export class ChatShellComponent implements OnInit {
 
     this.chatService
       .sendChatMessageStream({
-        provider: this.providerName,
+        provider: this.providerKey,
         model: this.selectedModel,
         messages: nextMessages,
         temperature: this.temperature,
