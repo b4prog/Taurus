@@ -3,6 +3,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { from, map, Observable } from "rxjs";
 
 import {
+  AgentStepDto,
   ChatRequest,
   ChatResponse,
   ChatResponseDto,
@@ -29,8 +30,11 @@ export class ChatService {
           chunk: this.mapStreamChunk(chunk),
         });
       });
+      const onStep = new Channel<AgentStepDto>((step) => {
+        subscriber.next({ kind: "step", step });
+      });
 
-      void invoke<ChatResponseDto>("send_chat_message_stream", { request, onChunk })
+      void invoke<ChatResponseDto>("send_chat_message_stream", { request, onChunk, onStep })
         .then((response) => {
           subscriber.next({
             kind: "complete",
@@ -44,6 +48,7 @@ export class ChatService {
 
       return () => {
         onChunk.onmessage = () => {};
+        onStep.onmessage = () => {};
       };
     });
   }

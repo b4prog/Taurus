@@ -8,12 +8,12 @@ use crate::error::AppError;
 
 use super::{
 	ChatMessage, ChatProvider, ChatRequest, ChatResponse, ChatRole, ChatStreamChunk, ModelInfo,
-	ProviderHealth, OLLAMA_PROVIDER_ID,
+	ProviderHealth, ToolCall, ToolDefinition, OLLAMA_PROVIDER_ID,
 };
 
 pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 pub struct OllamaProvider {
@@ -47,15 +47,52 @@ impl OllamaProvider {
 		})
 	}
 
-	fn build_chat_request_body(request: ChatRequest, stream: bool) -> OllamaChatRequest {
+	fn build_chat_request_body(
+		request: ChatRequest,
+		stream: bool,
+		tools: Vec<ToolDefinition>,
+	) -> OllamaChatRequest {
 		OllamaChatRequest {
 			model: request.model,
 			messages: request.messages.into_iter().map(From::from).collect(),
 			stream,
+			tools,
 			options: request
 				.temperature
 				.map(|temperature| OllamaChatOptions { temperature }),
 		}
+	}
+
+	async fn chat_with_tool_definitions(
+		&self,
+		request: ChatRequest,
+		tools: Vec<ToolDefinition>,
+	) -> Result<ChatResponse, AppError> {
+		let endpoint = self.endpoint("api/chat")?;
+		let body = Self::build_chat_request_body(request, false, tools);
+		let response = self
+			.client
+			.post(endpoint)
+			.json(&body)
+			.timeout(OLLAMA_REQUEST_TIMEOUT)
+			.send()
+			.await
+			.map_err(|error| {
+				AppError::ProviderUnavailable(format!(
+					"Could not reach Ollama at '{}': {error}",
+					self.base_url
+				))
+			})?;
+		if !response.status().is_success() {
+			return Err(AppError::ProviderUnavailable(format!(
+				"Ollama chat request failed with HTTP status {}. Ensure the selected model supports tool calling.",
+				response.status()
+			)));
+		}
+		let payload: OllamaChatResponse = response.json().await.map_err(|error| {
+			AppError::ProviderProtocol(format!("Could not parse Ollama chat response: {error}"))
+		})?;
+		map_ollama_response(payload)
 	}
 }
 
@@ -123,35 +160,15 @@ impl ChatProvider for OllamaProvider {
 	}
 
 	async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, AppError> {
-		let endpoint = self.endpoint("api/chat")?;
-		let body = Self::build_chat_request_body(request, false);
+		self.chat_with_tool_definitions(request, Vec::new()).await
+	}
 
-		let response = self
-			.client
-			.post(endpoint)
-			.json(&body)
-			.timeout(OLLAMA_REQUEST_TIMEOUT)
-			.send()
-			.await
-			.map_err(|error| {
-				AppError::ProviderUnavailable(format!(
-					"Could not reach Ollama at '{}': {error}",
-					self.base_url
-				))
-			})?;
-
-		if !response.status().is_success() {
-			return Err(AppError::ProviderUnavailable(format!(
-				"Ollama chat request failed with HTTP status {}.",
-				response.status()
-			)));
-		}
-
-		let payload: OllamaChatResponse = response.json().await.map_err(|error| {
-			AppError::ProviderProtocol(format!("Could not parse Ollama chat response: {error}"))
-		})?;
-
-		map_ollama_response(payload)
+	async fn chat_with_tools(
+		&self,
+		request: ChatRequest,
+		tools: Vec<ToolDefinition>,
+	) -> Result<ChatResponse, AppError> {
+		self.chat_with_tool_definitions(request, tools).await
 	}
 
 	async fn chat_stream(
@@ -160,8 +177,7 @@ impl ChatProvider for OllamaProvider {
 		mut on_chunk: Box<dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send>,
 	) -> Result<ChatResponse, AppError> {
 		let endpoint = self.endpoint("api/chat")?;
-		let body = Self::build_chat_request_body(request, true);
-
+		let body = Self::build_chat_request_body(request, true, Vec::new());
 		let response = self
 			.client
 			.post(endpoint)
@@ -174,72 +190,87 @@ impl ChatProvider for OllamaProvider {
 					self.base_url
 				))
 			})?;
-
 		if !response.status().is_success() {
 			return Err(AppError::ProviderUnavailable(format!(
 				"Ollama streaming chat request failed with HTTP status {}.",
 				response.status()
 			)));
 		}
-
 		let mut stream = response.bytes_stream();
-		let mut buffer: Vec<u8> = Vec::new();
-		let mut accumulated_content = String::new();
-		let mut last_chunk: Option<OllamaChatResponse> = None;
-
+		let mut accumulator = OllamaStreamAccumulator::default();
 		while let Some(next_chunk) = stream.next().await {
 			let bytes = next_chunk.map_err(|error| {
 				AppError::ProviderUnavailable(format!(
 					"Streaming response from Ollama failed: {error}"
 				))
 			})?;
-
-			buffer.extend_from_slice(bytes.as_ref());
-
-			while let Some(newline_index) = buffer.iter().position(|&byte| byte == b'\n') {
-				let line_bytes: Vec<u8> = buffer.drain(..=newline_index).collect();
-				let raw_line = std::str::from_utf8(&line_bytes).map_err(|error| {
-					AppError::ProviderProtocol(format!(
-						"Could not decode Ollama stream line as UTF-8: {error}"
-					))
-				})?;
-				let trimmed_line = raw_line.trim();
-				if trimmed_line.is_empty() {
-					continue;
-				}
-
-				let parsed_chunk = parse_stream_line(trimmed_line)?;
-				emit_chunk(&parsed_chunk, &mut accumulated_content, on_chunk.as_mut())?;
-				last_chunk = Some(parsed_chunk);
-			}
+			accumulator.push(&bytes, on_chunk.as_mut())?;
 		}
+		accumulator.finish(on_chunk.as_mut())
+	}
+}
 
-		let trailing = std::str::from_utf8(&buffer).map_err(|error| {
+#[derive(Default)]
+struct OllamaStreamAccumulator {
+	buffer: Vec<u8>,
+	content: String,
+	last_chunk: Option<OllamaChatResponse>,
+}
+
+impl OllamaStreamAccumulator {
+	fn push(
+		&mut self,
+		bytes: &[u8],
+		on_chunk: &mut (dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send),
+	) -> Result<(), AppError> {
+		self.buffer.extend_from_slice(bytes);
+		while let Some(newline_index) = self.buffer.iter().position(|&byte| byte == b'\n') {
+			let line_bytes: Vec<u8> = self.buffer.drain(..=newline_index).collect();
+			self.consume_line(&line_bytes, on_chunk)?;
+		}
+		Ok(())
+	}
+
+	fn consume_line(
+		&mut self,
+		line_bytes: &[u8],
+		on_chunk: &mut (dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send),
+	) -> Result<(), AppError> {
+		let raw_line = std::str::from_utf8(line_bytes).map_err(|error| {
 			AppError::ProviderProtocol(format!(
-				"Could not decode trailing Ollama stream bytes as UTF-8: {error}"
+				"Could not decode Ollama stream line as UTF-8: {error}"
 			))
 		})?;
-		let trailing = trailing.trim();
-		if !trailing.is_empty() {
-			let parsed_chunk = parse_stream_line(trailing)?;
-			emit_chunk(&parsed_chunk, &mut accumulated_content, on_chunk.as_mut())?;
-			last_chunk = Some(parsed_chunk);
+		let trimmed_line = raw_line.trim();
+		if trimmed_line.is_empty() {
+			return Ok(());
 		}
+		let parsed_chunk = parse_stream_line(trimmed_line)?;
+		emit_chunk(&parsed_chunk, &mut self.content, on_chunk)?;
+		self.last_chunk = Some(parsed_chunk);
+		Ok(())
+	}
 
-		let Some(final_chunk) = last_chunk else {
-			return Err(AppError::ProviderProtocol(
-				"Ollama returned an empty stream response.".to_string(),
-			));
-		};
-
+	fn finish(
+		mut self,
+		on_chunk: &mut (dyn FnMut(ChatStreamChunk) -> Result<(), AppError> + Send),
+	) -> Result<ChatResponse, AppError> {
+		if !self.buffer.is_empty() {
+			let trailing = std::mem::take(&mut self.buffer);
+			self.consume_line(&trailing, on_chunk)?;
+		}
+		let final_chunk = self.last_chunk.ok_or_else(|| {
+			AppError::ProviderProtocol("Ollama returned an empty stream response.".to_string())
+		})?;
 		let role = parse_chat_role(&final_chunk.message.role)?;
-
 		Ok(ChatResponse {
 			provider: OLLAMA_PROVIDER_ID.to_string(),
 			model: final_chunk.model,
 			message: ChatMessage {
 				role,
-				content: accumulated_content,
+				content: self.content,
+				tool_calls: final_chunk.message.tool_calls,
+				tool_name: final_chunk.message.tool_name,
 			},
 			done: final_chunk.done,
 			done_reason: final_chunk.done_reason,
@@ -281,6 +312,7 @@ fn parse_chat_role(role: &str) -> Result<ChatRole, AppError> {
 		"system" => Ok(ChatRole::System),
 		"user" => Ok(ChatRole::User),
 		"assistant" => Ok(ChatRole::Assistant),
+		"tool" => Ok(ChatRole::Tool),
 		_ => Err(AppError::ProviderProtocol(format!(
 			"Unsupported role returned by provider: '{role}'."
 		))),
@@ -310,6 +342,8 @@ fn map_ollama_response(payload: OllamaChatResponse) -> Result<ChatResponse, AppE
 		message: ChatMessage {
 			role,
 			content: payload.message.content,
+			tool_calls: payload.message.tool_calls,
+			tool_name: payload.message.tool_name,
 		},
 		done: payload.done,
 		done_reason: payload.done_reason,
@@ -359,6 +393,8 @@ struct OllamaChatRequest {
 	model: String,
 	messages: Vec<OllamaChatMessage>,
 	stream: bool,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	tools: Vec<ToolDefinition>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	options: Option<OllamaChatOptions>,
 }
@@ -367,6 +403,10 @@ struct OllamaChatRequest {
 struct OllamaChatMessage {
 	role: String,
 	content: String,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	tool_calls: Vec<ToolCall>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	tool_name: Option<String>,
 }
 
 impl From<ChatMessage> for OllamaChatMessage {
@@ -375,11 +415,13 @@ impl From<ChatMessage> for OllamaChatMessage {
 			ChatRole::System => "system",
 			ChatRole::User => "user",
 			ChatRole::Assistant => "assistant",
+			ChatRole::Tool => "tool",
 		};
-
 		Self {
 			role: role.to_string(),
 			content: value.content,
+			tool_calls: value.tool_calls,
+			tool_name: value.tool_name,
 		}
 	}
 }
@@ -401,14 +443,19 @@ struct OllamaChatResponse {
 #[derive(Debug, Deserialize)]
 struct OllamaChatMessageResponse {
 	role: String,
+	#[serde(default)]
 	content: String,
+	#[serde(default)]
+	tool_calls: Vec<ToolCall>,
+	#[serde(default)]
+	tool_name: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
 	use super::{
-		emit_chunk, map_models, map_ollama_response, parse_stream_line, resolve_base_url,
-		OllamaProvider, OllamaTagsResponse,
+		map_models, map_ollama_response, resolve_base_url, OllamaChatResponse, OllamaProvider,
+		OllamaStreamAccumulator, OllamaTagsResponse,
 	};
 	use crate::providers::{ChatProvider, ChatStreamChunk};
 
@@ -454,14 +501,40 @@ mod tests {
 	}
 
 	#[test]
+	fn maps_tool_calls_from_ollama_response() {
+		let payload: OllamaChatResponse = serde_json::from_str(
+			r#"{
+				"model":"qwen3",
+				"message":{
+					"role":"assistant",
+					"content":"",
+					"tool_calls":[{
+						"type":"function",
+						"function":{"index":0,"name":"search_web","arguments":{"query":"Taurus app"}}
+					}]
+				},
+				"done":true,
+				"done_reason":"stop"
+			}"#,
+		)
+		.expect("tool response should parse");
+		let response = map_ollama_response(payload).expect("tool response should map");
+		assert_eq!(response.message.tool_calls.len(), 1);
+		assert_eq!(response.message.tool_calls[0].function.index, Some(0));
+		assert_eq!(response.message.tool_calls[0].function.name, "search_web");
+		assert_eq!(
+			response.message.tool_calls[0].function.arguments["query"],
+			"Taurus app"
+		);
+	}
+
+	#[test]
 	fn stream_parsing_handles_fragmented_utf8_and_multiple_lines() {
 		let _chat_stream_ref = <OllamaProvider as ChatProvider>::chat_stream;
-
 		let first_line = r#"{"model":"llama3.1:8b","created_at":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":"Olá "},"done":false,"done_reason":null}"#;
 		let second_line = r#"{"model":"llama3.1:8b","created_at":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":"世界"},"done":true,"done_reason":"stop"}"#;
 		let payload = format!("{first_line}\n{second_line}\n");
 		let bytes = payload.as_bytes();
-
 		let split_index = bytes
 			.iter()
 			.position(|byte| *byte == 0xC3)
@@ -470,53 +543,29 @@ mod tests {
 			.iter()
 			.position(|byte| *byte == b'\n')
 			.expect("payload should contain a newline");
-
 		let chunks: Vec<&[u8]> = vec![
 			&bytes[..split_index + 1],
 			&bytes[split_index + 1..first_newline_index - 2],
 			&bytes[first_newline_index - 2..first_newline_index + 1],
 			&bytes[first_newline_index + 1..],
 		];
-
-		let mut buffer: Vec<u8> = Vec::new();
-		let mut accumulated_content = String::new();
-		let mut last_chunk = None;
 		let mut emitted_chunks: Vec<ChatStreamChunk> = Vec::new();
 		let mut on_chunk = |chunk: ChatStreamChunk| -> Result<(), crate::error::AppError> {
 			emitted_chunks.push(chunk);
 			Ok(())
 		};
-
+		let mut accumulator = OllamaStreamAccumulator::default();
 		for chunk in chunks {
-			buffer.extend_from_slice(chunk);
-
-			while let Some(newline_index) = buffer.iter().position(|byte| *byte == b'\n') {
-				let line_bytes: Vec<u8> = buffer.drain(..=newline_index).collect();
-				let raw_line = std::str::from_utf8(&line_bytes)
-					.expect("line bytes should decode as complete UTF-8");
-				let trimmed_line = raw_line.trim();
-				if trimmed_line.is_empty() {
-					continue;
-				}
-
-				let parsed_chunk =
-					parse_stream_line(trimmed_line).expect("stream line should parse");
-				emit_chunk(&parsed_chunk, &mut accumulated_content, &mut on_chunk)
-					.expect("stream chunk should emit");
-				last_chunk = Some(parsed_chunk);
-			}
+			accumulator
+				.push(chunk, &mut on_chunk)
+				.expect("stream chunk should accumulate");
 		}
-
-		let trailing = std::str::from_utf8(&buffer).expect("trailing bytes should be valid UTF-8");
-		assert!(trailing.trim().is_empty());
-
-		let final_chunk = last_chunk.expect("final chunk should exist");
-		let final_response = map_ollama_response(final_chunk).expect("final chunk should map");
-
-		assert_eq!(accumulated_content, "Olá 世界");
+		let final_response = accumulator
+			.finish(&mut on_chunk)
+			.expect("stream should finish");
+		assert_eq!(final_response.message.content, "Olá 世界");
 		assert_eq!(emitted_chunks.len(), 2);
 		assert_eq!(emitted_chunks[0].delta, "Olá ");
 		assert_eq!(emitted_chunks[1].delta, "世界");
-		assert_eq!(final_response.message.content, "世界");
 	}
 }

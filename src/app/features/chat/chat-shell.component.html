@@ -79,13 +79,46 @@
     <section class="message-list" aria-live="polite" aria-label="Chat messages">
       <article
         class="message"
-        *ngFor="let message of messages; trackBy: trackByMessageIndex"
+        *ngFor="let message of messages; let messageIndex = index; trackBy: trackByMessageIndex"
         [class.user]="message.role === 'user'"
         [class.assistant]="message.role === 'assistant'"
         [class.system]="message.role === 'system'"
       >
         <header>{{ authorLabel(message) }}</header>
-        <p>{{ message.content }}</p>
+        <section
+          *ngIf="message.role === 'assistant' && workflowSteps(messageIndex).length > 0"
+          class="agent-workflow"
+          aria-label="Agent activity"
+        >
+          <div
+            class="agent-step"
+            *ngFor="let step of workflowSteps(messageIndex)"
+            [class.running]="step.status === 'running'"
+            [class.completed]="step.status === 'completed'"
+            [class.failed]="step.status === 'failed'"
+          >
+            <button
+              type="button"
+              class="agent-step-summary"
+              [attr.aria-expanded]="step.expanded"
+              [attr.aria-controls]="'agent-step-detail-' + messageIndex + '-' + step.id"
+              (click)="toggleStepDetail(messageIndex, step.id)"
+            >
+              <span class="step-indicator" aria-hidden="true"></span>
+              <span class="step-label">{{ step.label }}</span>
+              <span class="step-status">{{ stepStatusLabel(step) }}</span>
+              <span class="step-chevron" aria-hidden="true">{{ step.expanded ? "−" : "+" }}</span>
+            </button>
+            <p
+              *ngIf="step.expanded"
+              class="agent-step-detail"
+              [id]="'agent-step-detail-' + messageIndex + '-' + step.id"
+            >
+              {{ step.detail }}
+            </p>
+          </div>
+        </section>
+        <p *ngIf="message.content">{{ message.content }}</p>
       </article>
     </section>
 
