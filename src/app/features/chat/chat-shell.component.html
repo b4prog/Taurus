@@ -1,0 +1,110 @@
+<div class="chat-layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>Taurus</h1>
+      <p>Local-first desktop chat</p>
+    </div>
+
+    <section class="conversation-list">
+      <h2>Conversations</h2>
+      <ul>
+        <li class="active">Current session</li>
+      </ul>
+      <p class="placeholder">Conversation history will be added in a future milestone.</p>
+    </section>
+  </aside>
+
+  <main class="chat-panel">
+    <header class="panel-header">
+      <div>
+        <h2>Chat</h2>
+        <p>Provider: {{ providerKey }}</p>
+      </div>
+
+      <div class="header-actions">
+        <button type="button" (click)="checkProviderHealth()" [disabled]="isCheckingHealth">
+          {{ isCheckingHealth ? "Checking..." : "Check Provider" }}
+        </button>
+        <button type="button" (click)="loadModels()" [disabled]="isLoadingModels">
+          {{ isLoadingModels ? "Loading..." : "List Models" }}
+        </button>
+      </div>
+    </header>
+
+    <section class="status-grid" aria-label="Provider and model status">
+      <div class="status-card">
+        <h3>Provider Status</h3>
+        <p
+          *ngIf="health !== null"
+          [class.healthy]="health.healthy"
+          [class.unhealthy]="!health.healthy"
+        >
+          {{ health.healthy ? "Available" : "Unavailable" }}
+        </p>
+        <p *ngIf="health !== null" class="muted">{{ health.baseUrl }}</p>
+        <p *ngIf="health?.message">{{ health?.message }}</p>
+        <p *ngIf="healthError" class="error">{{ healthError }}</p>
+      </div>
+
+      <div class="status-card">
+        <h3>Model Selection</h3>
+        <label for="model-select">Model</label>
+        <select id="model-select" [(ngModel)]="selectedModel" name="selectedModel">
+          <option value="" disabled>Select a model</option>
+          <option *ngFor="let model of models; trackBy: trackByModelId" [value]="model.id">
+            {{ model.displayName }} ({{ formatModelSize(model.sizeBytes) }})
+          </option>
+        </select>
+        <p *ngIf="models.length === 0" class="muted">No models loaded yet.</p>
+        <p *ngIf="modelsError" class="error">{{ modelsError }}</p>
+      </div>
+
+      <div class="status-card">
+        <h3>Generation</h3>
+        <label for="temperature">Temperature</label>
+        <input
+          id="temperature"
+          type="number"
+          min="0"
+          max="2"
+          step="0.1"
+          [(ngModel)]="temperature"
+          name="temperature"
+        />
+        <p class="muted">Range: 0.0 to 2.0</p>
+        <p *ngIf="lastDoneReason" class="muted">Last done reason: {{ lastDoneReason }}</p>
+      </div>
+    </section>
+
+    <section class="message-list" aria-live="polite" aria-label="Chat messages">
+      <article
+        class="message"
+        *ngFor="let message of messages; trackBy: trackByMessageIndex"
+        [class.user]="message.role === 'user'"
+        [class.assistant]="message.role === 'assistant'"
+        [class.system]="message.role === 'system'"
+      >
+        <header>{{ authorLabel(message) }}</header>
+        <p>{{ message.content }}</p>
+      </article>
+    </section>
+
+    <form class="composer" (ngSubmit)="sendPrompt()">
+      <label for="prompt">Prompt</label>
+      <textarea
+        id="prompt"
+        rows="4"
+        name="prompt"
+        [(ngModel)]="prompt"
+        placeholder="Ask something about your local model..."
+      ></textarea>
+
+      <div class="composer-footer">
+        <p *ngIf="chatError" class="error">{{ chatError }}</p>
+        <button type="submit" [disabled]="isSending || selectedModel.length === 0">
+          {{ isSending ? "Sending..." : "Send" }}
+        </button>
+      </div>
+    </form>
+  </main>
+</div>

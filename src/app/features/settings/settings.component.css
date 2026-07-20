@@ -1,0 +1,19 @@
+.settings {
+  margin: 2rem auto;
+  max-width: 720px;
+  border: 1px solid #d6d0c3;
+  border-radius: 12px;
+  padding: 1rem;
+  background: #fff;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+.settings h2 {
+  margin-top: 0;
+}
+
+.settings code {
+  background: #f2f4f7;
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+}
