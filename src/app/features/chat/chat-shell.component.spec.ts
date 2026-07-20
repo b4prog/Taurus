@@ -41,6 +41,24 @@ describe("ChatShellComponent", () => {
     );
     const streamUpdates: ChatStreamUpdate[] = [
       {
+        kind: "step",
+        step: {
+          id: "step-1",
+          label: "Searching the web",
+          status: "running",
+          detail: "Query: Taurus",
+        },
+      },
+      {
+        kind: "step",
+        step: {
+          id: "step-1",
+          label: "Searching the web",
+          status: "completed",
+          detail: "Found 5 web search results.",
+        },
+      },
+      {
         kind: "chunk",
         chunk: {
           provider: "ollama",
@@ -170,5 +188,29 @@ describe("ChatShellComponent", () => {
     expect(vm.messages.at(-1)?.role).toBe("assistant");
     expect(vm.messages.at(-1)?.content).toBe("Hello from model");
     expect(vm.lastDoneReason).toBe("stop");
+  });
+
+  it("updates each agent step in place and toggles its detail", () => {
+    const vm = component as unknown as {
+      prompt: string;
+      selectedModel: string;
+      messages: Array<{ role: string; content: string }>;
+      sendPrompt: () => void;
+      workflowSteps: (messageIndex: number) => Array<{
+        id: string;
+        status: string;
+        expanded: boolean;
+      }>;
+      toggleStepDetail: (messageIndex: number, stepId: string) => void;
+    };
+    vm.selectedModel = "llama3:latest";
+    vm.prompt = "Find Taurus";
+    vm.sendPrompt();
+    const assistantIndex = vm.messages.length - 1;
+    expect(vm.workflowSteps(assistantIndex).length).toBe(1);
+    expect(vm.workflowSteps(assistantIndex)[0].status).toBe("completed");
+    expect(vm.workflowSteps(assistantIndex)[0].expanded).toBeFalse();
+    vm.toggleStepDetail(assistantIndex, "step-1");
+    expect(vm.workflowSteps(assistantIndex)[0].expanded).toBeTrue();
   });
 });

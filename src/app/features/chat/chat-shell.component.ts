@@ -3,7 +3,13 @@ import { Component, inject, NgZone, OnInit } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import { finalize } from "rxjs";
 
-import { ChatMessage } from "../../core/chat/chat.models";
+import {
+  AgentStep,
+  AgentStepDto,
+  ChatMessage,
+  ChatStreamChunk,
+  ChatStreamUpdate,
+} from "../../core/chat/chat.models";
 import { ChatService } from "../../core/chat/chat.service";
 import { ModelInfo, ProviderHealth } from "../../core/providers/provider.models";
 import { ProviderService } from "../../core/providers/provider.service";
@@ -37,6 +43,7 @@ export class ChatShellComponent implements OnInit {
   protected isLoadingModels = false;
 
   protected messages: ChatMessage[] = [];
+  protected workflows = new Map<number, AgentStep[]>();
 
   protected prompt = "";
   protected selectedModel = "";
@@ -97,94 +104,69 @@ export class ChatShellComponent implements OnInit {
 
   protected sendPrompt(): void {
     const trimmedPrompt = this.prompt.trim();
-    if (trimmedPrompt.length === 0) {
-      this.chatError = "Enter a message before sending.";
+    if (!this.canSendPrompt(trimmedPrompt)) {
       return;
     }
-
-    if (this.selectedModel.length === 0) {
-      this.chatError = "Select a model before sending a message.";
-      return;
-    }
-
     this.chatError = "";
     this.lastDoneReason = "";
-
     const userMessage: ChatMessage = {
       role: "user",
       content: trimmedPrompt,
     };
-
     const nextMessages = [...this.messages, userMessage];
+    const requestMessages = [
+      ...this.messages.filter((message) => message.content.trim().length > 0),
+      userMessage,
+    ];
     const streamingAssistantMessage: ChatMessage = {
       role: "assistant",
       content: "",
     };
     const streamMessages = [...nextMessages, streamingAssistantMessage];
     const assistantIndex = streamMessages.length - 1;
-    const rawTemperature =
-      this.temperature === null || this.temperature === undefined
-        ? DEFAULT_TEMPERATURE
-        : Number(this.temperature);
-    const safeTemperature = Number.isFinite(rawTemperature)
-      ? Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, rawTemperature))
-      : DEFAULT_TEMPERATURE;
-
     this.messages = streamMessages;
     this.prompt = "";
     this.isSending = true;
-
     this.chatService
       .sendChatMessageStream({
         provider: this.providerKey,
         model: this.selectedModel,
-        messages: nextMessages,
-        temperature: safeTemperature,
+        messages: requestMessages,
+        temperature: this.safeTemperature(),
         stream: true,
       })
       .pipe(finalize(() => (this.isSending = false)))
       .subscribe({
         next: (update) => {
-          this.ngZone.run(() => {
-            if (update.kind === "chunk") {
-              const currentAssistant = this.messages.at(assistantIndex);
-              if (currentAssistant === undefined) {
-                return;
-              }
-
-              if (update.chunk.delta.length > 0) {
-                currentAssistant.content = `${currentAssistant.content}${update.chunk.delta}`;
-                this.messages = [...this.messages];
-              }
-
-              if (update.chunk.done) {
-                this.lastDoneReason = update.chunk.doneReason ?? "completed";
-              }
-              return;
-            }
-
-            const currentAssistant = this.messages.at(assistantIndex);
-            const fallbackContent = currentAssistant?.content ?? "";
-            const finalContent =
-              update.response.message.content.length > 0
-                ? update.response.message.content
-                : fallbackContent;
-
-            this.messages[assistantIndex] = {
-              ...update.response.message,
-              content: finalContent,
-            };
-            this.messages = [...this.messages];
-            this.lastDoneReason = update.response.doneReason ?? "completed";
-          });
+          this.ngZone.run(() => this.applyStreamUpdate(assistantIndex, update));
         },
         error: (error: unknown) => {
           this.ngZone.run(() => {
             this.chatError = extractTauriErrorMessage(error);
-            this.messages = nextMessages;
           });
         },
       });
+  }
+
+  protected workflowSteps(messageIndex: number): AgentStep[] {
+    return this.workflows.get(messageIndex) ?? [];
+  }
+
+  protected toggleStepDetail(messageIndex: number, stepId: string): void {
+    const steps = this.workflowSteps(messageIndex).map((step) =>
+      step.id === stepId ? { ...step, expanded: !step.expanded } : step,
+    );
+    this.workflows = new Map(this.workflows).set(messageIndex, steps);
+  }
+
+  protected stepStatusLabel(step: AgentStep): string {
+    if (step.status === "running") {
+      return "In progress";
+    }
+    if (step.status === "failed") {
+      return "Failed";
+    }
+    return "Completed";
   }
 
   protected trackByModelId(_: number, model: ModelInfo): string {
@@ -214,5 +196,79 @@ export class ChatShellComponent implements OnInit {
 
     const sizeInGiB = sizeBytes / 1024 ** 3;
     return `${sizeInGiB.toFixed(2)} GiB`;
+  }
+
+  private canSendPrompt(trimmedPrompt: string): boolean {
+    if (trimmedPrompt.length === 0) {
+      this.chatError = "Enter a message before sending.";
+      return false;
+    }
+    if (this.selectedModel.length === 0) {
+      this.chatError = "Select a model before sending a message.";
+      return false;
+    }
+    return true;
+  }
+
+  private safeTemperature(): number {
+    const rawTemperature =
+      this.temperature === null || this.temperature === undefined
+        ? DEFAULT_TEMPERATURE
+        : Number(this.temperature);
+    return Number.isFinite(rawTemperature)
+      ? Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, rawTemperature))
+      : DEFAULT_TEMPERATURE;
+  }
+
+  private applyStreamUpdate(assistantIndex: number, update: ChatStreamUpdate): void {
+    if (update.kind === "step") {
+      this.applyAgentStep(assistantIndex, update.step);
+      return;
+    }
+    if (update.kind === "chunk") {
+      this.applyStreamChunk(assistantIndex, update.chunk);
+      return;
+    }
+    const currentAssistant = this.messages.at(assistantIndex);
+    const fallbackContent = currentAssistant?.content ?? "";
+    this.messages[assistantIndex] = {
+      ...update.response.message,
+      content:
+        update.response.message.content.length > 0
+          ? update.response.message.content
+          : fallbackContent,
+    };
+    this.messages = [...this.messages];
+    this.lastDoneReason = update.response.doneReason ?? "completed";
+  }
+
+  private applyAgentStep(assistantIndex: number, event: AgentStepDto): void {
+    const currentSteps = this.workflowSteps(assistantIndex);
+    const existingIndex = currentSteps.findIndex((step) => step.id === event.id);
+    const updatedStep: AgentStep = {
+      ...event,
+      expanded: existingIndex >= 0 ? currentSteps[existingIndex].expanded : false,
+    };
+    const updatedSteps = [...currentSteps];
+    if (existingIndex >= 0) {
+      updatedSteps[existingIndex] = updatedStep;
+    } else {
+      updatedSteps.push(updatedStep);
+    }
+    this.workflows = new Map(this.workflows).set(assistantIndex, updatedSteps);
+  }
+
+  private applyStreamChunk(assistantIndex: number, chunk: ChatStreamChunk): void {
+    const currentAssistant = this.messages.at(assistantIndex);
+    if (currentAssistant === undefined) {
+      return;
+    }
+    if (chunk.delta.length > 0) {
+      currentAssistant.content = `${currentAssistant.content}${chunk.delta}`;
+      this.messages = [...this.messages];
+    }
+    if (chunk.done) {
+      this.lastDoneReason = chunk.doneReason ?? "completed";
+    }
   }
 }

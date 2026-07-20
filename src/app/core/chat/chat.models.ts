@@ -1,8 +1,21 @@
-export type ChatRole = "system" | "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
   role: ChatRole;
   content: string;
+}
+
+export type AgentStepStatus = "running" | "completed" | "failed";
+
+export interface AgentStepDto {
+  id: string;
+  label: string;
+  status: AgentStepStatus;
+  detail: string;
+}
+
+export interface AgentStep extends AgentStepDto {
+  expanded: boolean;
 }
 
 export interface ChatRequest {
@@ -51,4 +64,5 @@ export interface ChatStreamChunk {
 
 export type ChatStreamUpdate =
   | { kind: "chunk"; chunk: ChatStreamChunk }
+  | { kind: "step"; step: AgentStepDto }
   | { kind: "complete"; response: ChatResponse };

@@ -1,9 +1,10 @@
 use tauri::{ipc::Channel, State};
 
 use crate::{
+	agent::{run_agent_stream, AgentStepEvent},
 	app_state::AppState,
 	error::{ApiError, AppError},
-	providers::{ChatRequest, ChatResponse, ChatStreamChunk},
+	providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatStreamChunk},
 };
 
 #[tauri::command]
@@ -26,68 +27,98 @@ pub async fn send_chat_message_stream(
 	state: State<'_, AppState>,
 	request: ChatRequest,
 	on_chunk: Channel<ChatStreamChunk>,
+	on_step: Channel<AgentStepEvent>,
 ) -> Result<ChatResponse, ApiError> {
 	let mut request = validate_chat_request(request).map_err(ApiError::from)?;
 	request.stream = Some(true);
-
 	let provider = state
 		.provider(request.provider.as_deref())
 		.map_err(ApiError::from)?;
-
-	provider
-		.chat_stream(
-			request,
-			Box::new(move |chunk| {
-				on_chunk.send(chunk).map_err(|error| {
-					AppError::EventEmit(format!(
-						"Failed to send stream chunk over IPC channel: {error}"
-					))
-				})
-			}),
-		)
-		.await
-		.map_err(ApiError::from)
+	let tool_executor = state.tool_executor();
+	run_agent_stream(
+		provider,
+		tool_executor,
+		request,
+		Box::new(move |chunk| {
+			on_chunk.send(chunk).map_err(|error| {
+				AppError::EventEmit(format!(
+					"Failed to send stream chunk over IPC channel: {error}"
+				))
+			})
+		}),
+		Box::new(move |step| {
+			on_step.send(step).map_err(|error| {
+				AppError::EventEmit(format!(
+					"Failed to send agent step over IPC channel: {error}"
+				))
+			})
+		}),
+	)
+	.await
+	.map_err(ApiError::from)
 }
 
 fn validate_chat_request(mut request: ChatRequest) -> Result<ChatRequest, AppError> {
-	request.model = request.model.trim().to_string();
-	if request.model.is_empty() {
+	request.model = validate_model(&request.model)?;
+	validate_messages(&mut request.messages)?;
+	request.provider = normalize_provider(request.provider);
+	validate_temperature(request.temperature)?;
+	Ok(request)
+}
+
+fn validate_model(model: &str) -> Result<String, AppError> {
+	let model = model.trim();
+	if model.is_empty() {
 		return Err(AppError::Validation(
 			"A model is required for chat requests.".to_string(),
 		));
 	}
+	Ok(model.to_string())
+}
 
-	if request.messages.is_empty() {
+fn validate_messages(messages: &mut [ChatMessage]) -> Result<(), AppError> {
+	if messages.is_empty() {
 		return Err(AppError::Validation(
 			"At least one chat message is required.".to_string(),
 		));
 	}
-
-	for message in &mut request.messages {
-		message.content = message.content.trim().to_string();
-		if message.content.is_empty() {
-			return Err(AppError::Validation(
-				"Message content cannot be empty.".to_string(),
-			));
-		}
+	for message in messages {
+		validate_message(message)?;
 	}
+	Ok(())
+}
 
-	if let Some(provider) = &mut request.provider {
-		*provider = provider.trim().to_ascii_lowercase();
-		if provider.is_empty() {
-			request.provider = None;
-		}
+fn validate_message(message: &mut ChatMessage) -> Result<(), AppError> {
+	if message.role == ChatRole::Tool
+		|| !message.tool_calls.is_empty()
+		|| message.tool_name.is_some()
+	{
+		return Err(AppError::Validation(
+			"Tool messages and tool calls are managed internally by the agent.".to_string(),
+		));
 	}
-
-	if let Some(temperature) = request.temperature {
-		if !(0.0..=2.0).contains(&temperature) {
-			return Err(AppError::Validation(
-				"Temperature must be between 0.0 and 2.0.".to_string(),
-			));
-		}
+	message.content = message.content.trim().to_string();
+	if message.content.is_empty() {
+		return Err(AppError::Validation(
+			"Message content cannot be empty.".to_string(),
+		));
 	}
+	Ok(())
+}
 
-	Ok(request)
+fn normalize_provider(provider: Option<String>) -> Option<String> {
+	provider
+		.map(|value| value.trim().to_ascii_lowercase())
+		.filter(|value| !value.is_empty())
+}
+
+fn validate_temperature(temperature: Option<f32>) -> Result<(), AppError> {
+	if temperature.is_some_and(|value| !(0.0..=2.0).contains(&value)) {
+		return Err(AppError::Validation(
+			"Temperature must be between 0.0 and 2.0.".to_string(),
+		));
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -102,6 +133,8 @@ mod tests {
 			messages: vec![ChatMessage {
 				role: ChatRole::User,
 				content: "Hello".to_string(),
+				tool_calls: Vec::new(),
+				tool_name: None,
 			}],
 			temperature: Some(0.7),
 			stream: Some(false),
@@ -147,6 +180,8 @@ mod tests {
 		request.messages = vec![ChatMessage {
 			role: ChatRole::User,
 			content: "   ".to_string(),
+			tool_calls: Vec::new(),
+			tool_name: None,
 		}];
 
 		let error = validate_chat_request(request)
@@ -154,6 +189,15 @@ mod tests {
 		assert!(error
 			.to_string()
 			.contains("Message content cannot be empty"));
+	}
+
+	#[test]
+	fn validate_rejects_frontend_tool_messages() {
+		let mut request = valid_request();
+		request.messages[0].role = ChatRole::Tool;
+		request.messages[0].tool_name = Some("fetch_web_page".to_string());
+		let error = validate_chat_request(request).expect_err("tool messages should fail");
+		assert!(error.to_string().contains("managed internally"));
 	}
 
 	#[test]

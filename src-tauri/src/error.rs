@@ -17,6 +17,8 @@ pub enum AppError {
 	Config(String),
 	#[error("Internal stream delivery error: {0}")]
 	EventEmit(String),
+	#[error("Web tool failed: {0}")]
+	WebTool(String),
 }
 
 #[derive(Debug, Serialize)]
@@ -40,21 +42,7 @@ impl From<AppError> for ApiError {
 				code: "provider_unavailable".to_string(),
 				message,
 			},
-			AppError::HttpClient(http_error) => {
-				let message = if http_error.is_connect() {
-					"Could not reach the provider. Check that it is running and the URL is correct."
-						.to_string()
-				} else if http_error.is_timeout() {
-					"The provider request timed out. Try again in a moment.".to_string()
-				} else {
-					"The provider request failed. Check provider logs for more details.".to_string()
-				};
-
-				Self {
-					code: "provider_request_error".to_string(),
-					message,
-				}
-			}
+			AppError::HttpClient(http_error) => api_http_client_error(http_error),
 			AppError::ProviderProtocol(message) => Self {
 				code: "provider_protocol_error".to_string(),
 				message,
@@ -67,6 +55,24 @@ impl From<AppError> for ApiError {
 				code: "stream_event_error".to_string(),
 				message,
 			},
+			AppError::WebTool(message) => Self {
+				code: "web_tool_error".to_string(),
+				message,
+			},
 		}
+	}
+}
+
+fn api_http_client_error(error: reqwest::Error) -> ApiError {
+	let message = if error.is_connect() {
+		"Could not reach the provider. Check that it is running and the URL is correct.".to_string()
+	} else if error.is_timeout() {
+		"The provider request timed out. Try again in a moment.".to_string()
+	} else {
+		"The provider request failed. Check provider logs for more details.".to_string()
+	};
+	ApiError {
+		code: "provider_request_error".to_string(),
+		message,
 	}
 }

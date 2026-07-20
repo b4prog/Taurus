@@ -13,11 +13,11 @@ This repository currently provides a clean foundation for Taurus MVP:
 - Tauri v2 desktop shell
 - Rust backend with typed provider abstraction
 - Angular frontend with a chat-oriented UI shell
-- Ollama health check, model listing, and streaming chat command flow
+- Ollama health check, model listing, streaming chat, and agentic web research flow
 
 ## 3. Features
 
-- Local-first architecture (no telemetry and no remote SaaS dependencies by default)
+- Local-first architecture with no telemetry; external web requests happen only when the model uses a web tool
 - Provider abstraction (`ChatProvider`) to support additional providers later
 - Ollama integration:
   - availability check
@@ -25,6 +25,14 @@ This repository currently provides a clean foundation for Taurus MVP:
   - automatic model listing when Ollama is reachable
   - model listing
   - streaming chat request/response (real-time token streaming)
+- Agentic web research:
+  - `search_web` searches the public web through Bing's structured RSS results
+  - `fetch_web_page` extracts readable text and labeled links from a public HTTP or HTTPS page
+  - the two highest-ranked search results are fetched automatically so research uses page content rather than snippets alone
+  - the planner can selectively follow relevant links from hubs, indexes, directories, and overview pages to reach more specific documents
+  - bounded planning rounds and tool calls fall through to a best-effort answer instead of interrupting the workflow
+  - private/local network destinations and non-text downloads are rejected
+- Live agent activity in the chat, with one expandable row per planning, search, page-read, source-coverage, or writing step
 - Typed command contracts between Angular and Rust
 - Basic chat workspace UI:
   - conversation sidebar placeholder
@@ -45,7 +53,9 @@ Backend (Rust):
 - Tauri commands are thin and validate input
 - Provider-independent types live in `providers/mod.rs`
 - Ollama integration stays in `providers/ollama.rs`
-- Shared application state stores provider instances
+- `agent.rs` coordinates model/tool turns without coupling the UI to Ollama
+- Web tool execution and network safety rules live under `tools/`
+- Shared application state stores provider and tool instances
 
 ## 5. Repository Structure
 
@@ -72,15 +82,19 @@ Backend (Rust):
     ├── tauri.conf.json
     └── src/
         ├── app_state.rs
+        ├── agent.rs
         ├── error.rs
         ├── commands/
         │   ├── chat.rs
         │   ├── health.rs
         │   ├── mod.rs
         │   └── models.rs
-        └── providers/
+        ├── providers/
             ├── mod.rs
             └── ollama.rs
+        └── tools/
+            ├── mod.rs
+            └── web.rs
 ```
 
 ## 6. Requirements
@@ -250,7 +264,15 @@ npm install
 
 This will generate and update `package-lock.json`.
 
-## 14. Running Taurus in Development Mode
+## 14. Using Web Research
+
+Choose an Ollama model that supports tool calling. When a prompt needs current or external information, the model can search the web. Taurus then fetches the two highest-ranked result pages so the model can use page content in its final response. If a fetched result is a hub, index, directory, feed, listing, or overview, Taurus exposes its labeled links to the planner so the planner can open only the documents relevant to the request. For synthesis, comparison, explanation, and evaluation tasks, headlines and short summaries on a hub are treated as discovery material; the planner is instructed to fetch a small representative set of the linked documents before answering. This behavior is generic and is not tied to news or any particular website structure.
+
+Each action appears above the assistant response as a one-line status row. Select a row to expand or collapse it. Search details include the exact query, result titles, URLs, and snippets. Page-read details include the fetched text and a bounded list of discovered links. The source-coverage step reports how many search result sets and pages were collected, whether more evidence is needed, and the exact next action.
+
+Web research is opt-in at the prompt level: the model decides when it is needed. Search queries are sent to Bing, and the highest-ranked result pages are requested directly from their hosts. Do not include secrets in a prompt that asks for web research.
+
+## 15. Running Taurus in Development Mode
 
 Run the desktop app (Angular + Tauri):
 
@@ -265,7 +287,7 @@ npm run start
 npm run build
 ```
 
-## 15. Building the Application
+## 16. Building the Application
 
 Production desktop build:
 
@@ -279,7 +301,7 @@ Frontend-only production build:
 npm run build
 ```
 
-## 16. Running Tests
+## 17. Running Tests
 
 Frontend unit tests:
 
@@ -295,7 +317,7 @@ npm run rust:test
 
 If frontend tests fail due missing browser runtime, install Chrome/Chromium and retry.
 
-## 17. Formatting the Code
+## 18. Formatting the Code
 
 Format and check formatting:
 
@@ -305,7 +327,7 @@ npm run format:check
 npm run rust:fmt
 ```
 
-## 18. Linting the Code
+## 19. Linting the Code
 
 Frontend lint:
 
@@ -319,7 +341,7 @@ Rust lint:
 npm run rust:clippy
 ```
 
-## 19. Type Checking
+## 20. Type Checking
 
 Run TypeScript type check:
 
@@ -327,7 +349,7 @@ Run TypeScript type check:
 npm run typecheck
 ```
 
-## 20. Troubleshooting
+## 21. Troubleshooting
 
 Common issues:
 
@@ -335,6 +357,13 @@ Common issues:
   - Make sure Ollama is running.
   - Verify `TAURUS_OLLAMA_BASE_URL`.
   - Confirm `http://localhost:11434/api/tags` is reachable.
+- Agent planning fails with a tool-calling error:
+  - Select an Ollama model with tool-calling support.
+  - Confirm the model can use tools through Ollama's `/api/chat` endpoint.
+- Web search or page fetch fails:
+  - Confirm the machine has internet access.
+  - Bing or the target site may reject automated requests or apply rate limits.
+  - Localhost, private IP ranges, oversized responses, and binary content are blocked intentionally.
 - Linux build errors about WebKit/GTK:
   - Recheck distro package names from Tauri prerequisites docs.
 - `npm run test` fails in headless environments:
@@ -352,9 +381,12 @@ Common issues:
 npx -y node@20 ./node_modules/@angular/cli/bin/ng build
 ```
 
-## 21. Security Notes
+## 22. Security Notes
 
 - Taurus is local-first and does not include telemetry by default.
+- Web research sends the model's search query to Bing and automatically fetches up to two highest-ranked public result pages per search. The planner may selectively request additional public pages linked by fetched results, subject to the global planning-round and tool-call limits.
+- The fetch tool blocks loopback, private, link-local, and other special-use IP ranges, including across redirects.
+- Web responses are size-limited and page text is treated as untrusted reference material in the agent prompt. The expandable workflow retains the fetched text, while the model receives a bounded excerpt to leave enough context for its answer.
 - Tauri command surface is intentionally narrow:
   - no arbitrary shell execution
   - no arbitrary filesystem commands

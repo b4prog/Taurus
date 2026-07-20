@@ -1,7 +1,9 @@
+mod agent;
 mod app_state;
 mod commands;
 mod error;
 mod providers;
+mod tools;
 
 use app_state::AppState;
 

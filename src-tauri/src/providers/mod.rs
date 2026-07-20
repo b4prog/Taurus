@@ -13,12 +13,50 @@ pub enum ChatRole {
 	System,
 	User,
 	Assistant,
+	Tool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatMessage {
 	pub role: ChatRole,
 	pub content: String,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub tool_calls: Vec<ToolCall>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCall {
+	#[serde(rename = "type", default = "function_tool_type")]
+	pub tool_type: String,
+	pub function: ToolFunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolFunctionCall {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub index: Option<usize>,
+	pub name: String,
+	pub arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+	#[serde(rename = "type")]
+	pub tool_type: String,
+	pub function: ToolFunctionDefinition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolFunctionDefinition {
+	pub name: String,
+	pub description: String,
+	pub parameters: serde_json::Value,
+}
+
+fn function_tool_type() -> String {
+	"function".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +110,11 @@ pub trait ChatProvider: Send + Sync {
 	async fn health_check(&self) -> Result<ProviderHealth, AppError>;
 	async fn list_models(&self) -> Result<Vec<ModelInfo>, AppError>;
 	async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, AppError>;
+	async fn chat_with_tools(
+		&self,
+		request: ChatRequest,
+		tools: Vec<ToolDefinition>,
+	) -> Result<ChatResponse, AppError>;
 	async fn chat_stream(
 		&self,
 		request: ChatRequest,
