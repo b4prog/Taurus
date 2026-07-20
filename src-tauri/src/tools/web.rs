@@ -12,7 +12,7 @@ use reqwest::{
 	redirect::Policy,
 	Client, Response, Url,
 };
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -32,6 +32,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PAGE_CHARACTERS: usize = 16_000;
 const MAX_AGENT_PAGE_CHARACTERS: usize = 3_000;
+const MAX_PAGE_LINKS: usize = 40;
+const MAX_AGENT_PAGE_LINKS: usize = 20;
+const MAX_AGENT_LINK_CHARACTERS: usize = 6_000;
+const MAX_DETAIL_LINKS: usize = 20;
+const MAX_LINK_TEXT_CHARACTERS: usize = 160;
+const MAX_LINK_URL_CHARACTERS: usize = 2_000;
 const MAX_REDIRECTS: usize = 5;
 const AUTO_FETCH_RESULT_LIMIT: usize = 2;
 
@@ -47,6 +53,13 @@ pub struct WebPage {
 	pub url: String,
 	pub title: Option<String>,
 	pub content: String,
+	pub links: Vec<WebPageLink>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WebPageLink {
+	pub url: String,
+	pub text: String,
 }
 
 #[derive(Serialize)]
@@ -55,6 +68,8 @@ struct WebPageEvidence<'a> {
 	title: Option<&'a str>,
 	content_excerpt: String,
 	content_truncated: bool,
+	links: Vec<&'a WebPageLink>,
+	links_truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +186,8 @@ impl ToolExecutor for WebTools {
 				Ok(ToolExecution {
 					content,
 					detail,
+					// Candidate links are returned to the planner so it can choose relevant
+					// follow-up pages instead of recursively fetching every link.
 					follow_up_calls: Vec::new(),
 				})
 			}
@@ -219,24 +236,66 @@ fn format_search_detail(query: &str, results: &[WebSearchResult], pages_to_fetch
 
 fn format_page_detail(page: &WebPage) -> String {
 	let title = page.title.as_deref().unwrap_or("Untitled page");
+	let links = format_page_links(page);
 	format!(
-		"URL: {}\nTitle: {title}\nFetched content ({} characters):\n\n{}",
+		"URL: {}\nTitle: {title}\nFetched content ({} characters):\n\n{}\n\nDiscovered links ({}):\n{}",
 		page.url,
 		page.content.chars().count(),
-		page.content
+		page.content,
+		page.links.len(),
+		links
 	)
 }
 
 fn serialize_page_evidence(page: &WebPage) -> Result<String, AppError> {
 	let character_count = page.content.chars().count();
+	let links = agent_page_links(page);
 	let evidence = WebPageEvidence {
 		url: &page.url,
 		title: page.title.as_deref(),
 		content_excerpt: truncate_characters(&page.content, MAX_AGENT_PAGE_CHARACTERS),
 		content_truncated: character_count > MAX_AGENT_PAGE_CHARACTERS,
+		links_truncated: links.len() < page.links.len(),
+		links,
 	};
 	serde_json::to_string(&evidence)
 		.map_err(|error| AppError::WebTool(format!("Could not encode fetched page: {error}")))
+}
+
+fn format_page_links(page: &WebPage) -> String {
+	if page.links.is_empty() {
+		return "No public links with readable labels were found.".to_string();
+	}
+	let mut lines = page
+		.links
+		.iter()
+		.take(MAX_DETAIL_LINKS)
+		.enumerate()
+		.map(|(index, link)| format!("{}. {}\n{}", index + 1, link.text, link.url))
+		.collect::<Vec<_>>();
+	if page.links.len() > MAX_DETAIL_LINKS {
+		lines.push(format!(
+			"[{} additional link(s) omitted from activity details]",
+			page.links.len() - MAX_DETAIL_LINKS
+		));
+	}
+	lines.join("\n\n")
+}
+
+fn agent_page_links(page: &WebPage) -> Vec<&WebPageLink> {
+	let mut selected = Vec::new();
+	let mut character_count: usize = 0;
+	for link in &page.links {
+		let link_characters = link.url.chars().count() + link.text.chars().count();
+		if selected.len() >= MAX_AGENT_PAGE_LINKS
+			|| character_count.saturating_add(link_characters) > MAX_AGENT_LINK_CHARACTERS
+		{
+			break;
+		}
+		selected.push(link);
+		character_count += link_characters;
+	}
+	selected
 }
 
 pub fn describe_tool_call(call: &ToolCall) -> (String, String) {
@@ -284,7 +343,7 @@ fn fetch_tool_definition() -> ToolDefinition {
 		tool_type: "function".to_string(),
 		function: ToolFunctionDefinition {
 			name: FETCH_WEB_PAGE_TOOL_NAME.to_string(),
-			description: "Fetch a public HTTP or HTTPS web page and return its readable text. Use it to inspect promising search results.".to_string(),
+			description: "Fetch a public HTTP or HTTPS web page and return its readable text plus labeled links discovered on the page. Headlines, cards, and summaries from a hub, index, directory, feed, listing, or overview are discovery material. When the user's task requires summarizing, comparing, explaining, or evaluating the underlying information, fetch a small representative set of relevant linked documents before answering. Do not fetch unrelated links or every link.".to_string(),
 			parameters: json!({
 				"type": "object",
 				"required": ["url"],
@@ -373,29 +432,181 @@ fn parse_web_page(url: &str, html: &str) -> Result<WebPage, AppError> {
 		.next()
 		.map(|element| normalized_text(element.text()))
 		.filter(|value| !value.is_empty());
-	let root_selector = selector("main, article, body")?;
+	let root = content_root(&document)?.ok_or_else(|| {
+		AppError::WebTool("The page did not contain readable HTML content.".to_string())
+	})?;
 	let content_selector = selector("h1, h2, h3, h4, p, li, blockquote, pre, td, th")?;
-	let content = document
-		.select(&root_selector)
-		.next()
-		.map(|root| {
-			root.select(&content_selector)
-				.map(|element| normalized_text(element.text()))
-				.filter(|text| !text.is_empty())
-				.collect::<Vec<_>>()
-				.join("\n")
-		})
-		.unwrap_or_default();
-	if content.is_empty() {
+	let content = root
+		.select(&content_selector)
+		.map(|element| normalized_text(element.text()))
+		.filter(|text| !text.is_empty())
+		.collect::<Vec<_>>()
+		.join("\n");
+	let links = extract_page_links(&document, &root, url)?;
+	if content.is_empty() && links.is_empty() {
 		return Err(AppError::WebTool(
-			"The page did not contain readable text.".to_string(),
+			"The page did not contain readable text or usable public links.".to_string(),
 		));
 	}
 	Ok(WebPage {
 		url: url.to_string(),
 		title,
 		content: truncate_characters(&content, MAX_PAGE_CHARACTERS),
+		links,
 	})
+}
+
+fn content_root<'a>(document: &'a Html) -> Result<Option<ElementRef<'a>>, AppError> {
+	let main_selector = selector("main")?;
+	if let Some(main) = document.select(&main_selector).next() {
+		return Ok(Some(main));
+	}
+	let article_selector = selector("article")?;
+	let articles = document.select(&article_selector).collect::<Vec<_>>();
+	if articles.len() == 1 {
+		return Ok(articles.into_iter().next());
+	}
+	let body_selector = selector("body")?;
+	Ok(document.select(&body_selector).next())
+}
+
+fn extract_page_links(
+	document: &Html,
+	primary_root: &ElementRef<'_>,
+	page_url: &str,
+) -> Result<Vec<WebPageLink>, AppError> {
+	let base_url = Url::parse(page_url).map_err(|error| {
+		AppError::WebTool(format!(
+			"Could not resolve links from the fetched page: {error}"
+		))
+	})?;
+	let mut current_url = base_url.clone();
+	current_url.set_fragment(None);
+	let anchor_selector = selector("a[href]")?;
+	let image_selector = selector("img[alt]")?;
+	let mut collector =
+		PageLinkCollector::new(&base_url, &current_url, &anchor_selector, &image_selector);
+	collector.append(primary_root);
+	if !collector.is_full() && primary_root.value().name() != "body" {
+		let body_selector = selector("body")?;
+		if let Some(body) = document.select(&body_selector).next() {
+			collector.append(&body);
+		}
+	}
+	Ok(collector.into_links())
+}
+
+struct PageLinkCollector<'a> {
+	base_url: &'a Url,
+	current_url: &'a Url,
+	anchor_selector: &'a Selector,
+	image_selector: &'a Selector,
+	seen_urls: HashSet<String>,
+	links: Vec<WebPageLink>,
+}
+
+impl<'a> PageLinkCollector<'a> {
+	fn new(
+		base_url: &'a Url,
+		current_url: &'a Url,
+		anchor_selector: &'a Selector,
+		image_selector: &'a Selector,
+	) -> Self {
+		Self {
+			base_url,
+			current_url,
+			anchor_selector,
+			image_selector,
+			seen_urls: HashSet::new(),
+			links: Vec::new(),
+		}
+	}
+
+	fn append(&mut self, root: &ElementRef<'_>) {
+		for anchor in root.select(self.anchor_selector) {
+			if self.is_full() {
+				return;
+			}
+			let Some(href) = anchor.value().attr("href") else {
+				continue;
+			};
+			let Some(url) = resolve_page_link(self.base_url, self.current_url, href) else {
+				continue;
+			};
+			if !self.seen_urls.insert(url.clone()) {
+				continue;
+			}
+			self.links.push(WebPageLink {
+				text: link_text(&anchor, self.image_selector, &url),
+				url,
+			});
+		}
+	}
+
+	fn is_full(&self) -> bool {
+		self.links.len() >= MAX_PAGE_LINKS
+	}
+
+	fn into_links(self) -> Vec<WebPageLink> {
+		self.links
+	}
+}
+
+fn resolve_page_link(base_url: &Url, current_url: &Url, href: &str) -> Option<String> {
+	let mut resolved = base_url.join(href.trim()).ok()?;
+	resolved.set_fragment(None);
+	if resolved == *current_url || resolved.as_str().chars().count() > MAX_LINK_URL_CHARACTERS {
+		return None;
+	}
+	parse_public_url(resolved.as_str())
+		.ok()
+		.map(|url| url.to_string())
+}
+
+fn link_text(anchor: &ElementRef<'_>, image_selector: &Selector, url: &str) -> String {
+	let visible_text = normalized_text(anchor.text());
+	if !visible_text.is_empty() {
+		return truncate_link_text(&visible_text);
+	}
+	for attribute in ["aria-label", "title"] {
+		if let Some(value) = anchor.value().attr(attribute) {
+			let normalized = normalize_string(value);
+			if !normalized.is_empty() {
+				return truncate_link_text(&normalized);
+			}
+		}
+	}
+	if let Some(alt) = anchor
+		.select(image_selector)
+		.filter_map(|image| image.value().attr("alt"))
+		.map(normalize_string)
+		.find(|value| !value.is_empty())
+	{
+		return truncate_link_text(&alt);
+	}
+	fallback_link_text(url)
+}
+
+fn truncate_link_text(value: &str) -> String {
+	value.chars().take(MAX_LINK_TEXT_CHARACTERS).collect()
+}
+
+fn fallback_link_text(url: &str) -> String {
+	let Ok(parsed) = Url::parse(url) else {
+		return "Linked page".to_string();
+	};
+	let path_text = parsed
+		.path_segments()
+		.and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
+		.map(|segment| segment.replace(['-', '_'], " "))
+		.map(|value| normalize_string(&value))
+		.filter(|value| !value.is_empty());
+	truncate_link_text(
+		path_text
+			.as_deref()
+			.or_else(|| parsed.host_str())
+			.unwrap_or("Linked page"),
+	)
 }
 
 fn selector(value: &str) -> Result<Selector, AppError> {
@@ -536,6 +747,7 @@ async fn parse_page_response(final_url: Url, response: Response) -> Result<WebPa
 			url: final_url.to_string(),
 			title: None,
 			content: truncate_characters(body.trim(), MAX_PAGE_CHARACTERS),
+			links: Vec::new(),
 		})
 	}
 }
@@ -690,8 +902,8 @@ mod tests {
 
 	use super::{
 		format_page_detail, format_search_detail, is_public_ipv4, page_fetch_calls,
-		parse_search_results, parse_web_page, serialize_page_evidence, WebPage, WebSearchResult,
-		WebTools, MAX_AGENT_PAGE_CHARACTERS,
+		parse_search_results, parse_web_page, serialize_page_evidence, WebPage, WebPageLink,
+		WebSearchResult, WebTools, MAX_AGENT_PAGE_CHARACTERS,
 	};
 
 	#[test]
@@ -749,6 +961,70 @@ mod tests {
 		let page = parse_web_page("https://example.com", html).expect("page should parse");
 		assert_eq!(page.title.as_deref(), Some("Example article"));
 		assert_eq!(page.content, "Heading\nFirst paragraph.");
+		assert!(page.links.is_empty());
+	}
+
+	#[test]
+	fn discovers_labeled_public_links_from_general_html() {
+		let html = r##"
+			<html><head><title>Resource hub</title></head><body>
+			<header><a href="/global-navigation">Global navigation</a></header>
+			<main><h1>Resource hub</h1><p>Choose a resource.</p>
+			<a href="/guides/first#details">First guide</a>
+			<a href="https://research.example.org/report"><img alt="External report"></a>
+			<a href="/guides/first">Duplicate guide</a>
+			<a href="#local-section">Same document</a>
+			<a href="mailto:hello@example.com">Email</a>
+			<a href="http://localhost/private">Private page</a>
+			</main></body></html>
+		"##;
+		let page =
+			parse_web_page("https://example.com/resources", html).expect("page should parse");
+		assert_eq!(
+			page.links,
+			vec![
+				WebPageLink {
+					url: "https://example.com/guides/first".to_string(),
+					text: "First guide".to_string(),
+				},
+				WebPageLink {
+					url: "https://research.example.org/report".to_string(),
+					text: "External report".to_string(),
+				},
+				WebPageLink {
+					url: "https://example.com/global-navigation".to_string(),
+					text: "Global navigation".to_string(),
+				},
+			]
+		);
+	}
+
+	#[test]
+	fn keeps_multiple_document_cards_in_the_primary_content() {
+		let html = r#"
+			<html><body><main><h1>Documents</h1>
+			<article><h2>First document</h2><p>First summary.</p><a href="/first">Read first</a></article>
+			<article><h2>Second document</h2><p>Second summary.</p><a href="/second">Read second</a></article>
+			</main></body></html>
+		"#;
+		let page = parse_web_page("https://example.com/library", html).expect("page should parse");
+		assert!(page.content.contains("First document\nFirst summary."));
+		assert!(page.content.contains("Second document\nSecond summary."));
+		assert_eq!(page.links.len(), 2);
+		assert_eq!(page.links[0].url, "https://example.com/first");
+		assert_eq!(page.links[1].url, "https://example.com/second");
+	}
+
+	#[test]
+	fn accepts_a_directory_that_contains_only_labeled_links() {
+		let html =
+			r#"<html><body><main><a href="/document">Only document</a></main></body></html>"#;
+		let page =
+			parse_web_page("https://example.com/directory", html).expect("page should parse");
+		assert!(page.content.is_empty());
+		assert_eq!(page.links.len(), 1);
+		assert_eq!(page.links[0].text, "Only document");
+		assert_eq!(page.links[0].url, "https://example.com/document");
 	}
 
 	#[test]
@@ -779,11 +1055,17 @@ mod tests {
 			url: "https://example.com/article".to_string(),
 			title: Some("Example article".to_string()),
 			content: "Full fetched article text.".to_string(),
+			links: vec![WebPageLink {
+				url: "https://example.com/source".to_string(),
+				text: "Supporting source".to_string(),
+			}],
 		};
 		let detail = format_page_detail(&page);
 		assert!(detail.contains("URL: https://example.com/article"));
 		assert!(detail.contains("Title: Example article"));
 		assert!(detail.contains("Full fetched article text."));
+		assert!(detail.contains("Supporting source"));
+		assert!(detail.contains("https://example.com/source"));
 	}
 
 	#[test]
@@ -793,6 +1075,10 @@ mod tests {
 			url: "https://example.com/long-article".to_string(),
 			title: Some("Long article".to_string()),
 			content: full_content.clone(),
+			links: vec![WebPageLink {
+				url: "https://example.com/deeper".to_string(),
+				text: "Deeper document".to_string(),
+			}],
 		};
 		let encoded = serialize_page_evidence(&page).expect("page evidence should encode");
 		let evidence: serde_json::Value =
@@ -806,6 +1092,8 @@ mod tests {
 			MAX_AGENT_PAGE_CHARACTERS
 		);
 		assert_eq!(evidence["content_truncated"], true);
+		assert_eq!(evidence["links"][0]["text"], "Deeper document");
+		assert_eq!(evidence["links_truncated"], false);
 		assert!(format_page_detail(&page).contains(&full_content));
 	}
 

@@ -27,8 +27,9 @@ This repository currently provides a clean foundation for Taurus MVP:
   - streaming chat request/response (real-time token streaming)
 - Agentic web research:
   - `search_web` searches the public web through Bing's structured RSS results
-  - `fetch_web_page` extracts readable text from a public HTTP or HTTPS page
+  - `fetch_web_page` extracts readable text and labeled links from a public HTTP or HTTPS page
   - the two highest-ranked search results are fetched automatically so research uses page content rather than snippets alone
+  - the planner can selectively follow relevant links from hubs, indexes, directories, and overview pages to reach more specific documents
   - bounded planning rounds and tool calls fall through to a best-effort answer instead of interrupting the workflow
   - private/local network destinations and non-text downloads are rejected
 - Live agent activity in the chat, with one expandable row per planning, search, page-read, source-coverage, or writing step
@@ -265,9 +266,9 @@ This will generate and update `package-lock.json`.
 
 ## 14. Using Web Research
 
-Choose an Ollama model that supports tool calling. When a prompt needs current or external information, the model can search the web. Taurus then fetches the two highest-ranked result pages so the model can use page content in its final response.
+Choose an Ollama model that supports tool calling. When a prompt needs current or external information, the model can search the web. Taurus then fetches the two highest-ranked result pages so the model can use page content in its final response. If a fetched result is a hub, index, directory, feed, listing, or overview, Taurus exposes its labeled links to the planner so the planner can open only the documents relevant to the request. For synthesis, comparison, explanation, and evaluation tasks, headlines and short summaries on a hub are treated as discovery material; the planner is instructed to fetch a small representative set of the linked documents before answering. This behavior is generic and is not tied to news or any particular website structure.
 
-Each action appears above the assistant response as a one-line status row. Select a row to expand or collapse it. Search details include the exact query, result titles, URLs, and snippets. Page-read details include the fetched text. The source-coverage step reports how many search result sets and pages were collected, whether more evidence is needed, and the exact next action.
+Each action appears above the assistant response as a one-line status row. Select a row to expand or collapse it. Search details include the exact query, result titles, URLs, and snippets. Page-read details include the fetched text and a bounded list of discovered links. The source-coverage step reports how many search result sets and pages were collected, whether more evidence is needed, and the exact next action.
 
 Web research is opt-in at the prompt level: the model decides when it is needed. Search queries are sent to Bing, and the highest-ranked result pages are requested directly from their hosts. Do not include secrets in a prompt that asks for web research.
 
@@ -383,7 +384,7 @@ npx -y node@20 ./node_modules/@angular/cli/bin/ng build
 ## 22. Security Notes
 
 - Taurus is local-first and does not include telemetry by default.
-- Web research sends the model's search query to Bing and fetches up to two highest-ranked public result pages per search.
+- Web research sends the model's search query to Bing and automatically fetches up to two highest-ranked public result pages per search. The planner may selectively request additional public pages linked by fetched results, subject to the global planning-round and tool-call limits.
 - The fetch tool blocks loopback, private, link-local, and other special-use IP ranges, including across redirects.
 - Web responses are size-limited and page text is treated as untrusted reference material in the agent prompt. The expandable workflow retains the fetched text, while the model receives a bounded excerpt to leave enough context for its answer.
 - Tauri command surface is intentionally narrow:
